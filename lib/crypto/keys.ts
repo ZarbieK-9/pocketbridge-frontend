@@ -186,13 +186,24 @@ export async function generateIdentityKeyPair(): Promise<Ed25519KeyPair> {
     let publicKey: Uint8Array;
 
     if (provider === 'noble') {
-      // Generate private key (32 random bytes)
-      privateKey = utils.randomSecretKey();
-      console.log('[generateIdentityKeyPair] Private key generated (noble)');
-      // Derive public key from private key
-      console.log('[generateIdentityKeyPair] Deriving public key (noble)...');
-      publicKey = await getPublicKey(privateKey);
-      console.log('[generateIdentityKeyPair] Public key derived (noble)');
+      try {
+        // Generate private key (32 random bytes)
+        privateKey = utils.randomSecretKey();
+        console.log('[generateIdentityKeyPair] Private key generated (noble)');
+        // Derive public key from private key
+        console.log('[generateIdentityKeyPair] Deriving public key (noble)...');
+        publicKey = await getPublicKey(privateKey);
+        console.log('[generateIdentityKeyPair] Public key derived (noble)');
+      } catch (nobleError) {
+        console.warn('[generateIdentityKeyPair] Noble getPublicKey failed, falling back to tweetnacl:', nobleError);
+        provider = 'nacl';
+        const nacl = await import('tweetnacl');
+        const seed = nacl.randomBytes(32);
+        const kp = nacl.sign.keyPair.fromSeed(seed);
+        privateKey = seed;
+        publicKey = kp.publicKey;
+        console.log('[generateIdentityKeyPair] Keypair generated (tweetnacl)');
+      }
     } else {
       // Fallback to tweetnacl (fromSeed) for Ed25519
       const nacl = await import('tweetnacl');
@@ -225,7 +236,24 @@ export async function generateIdentityKeyPair(): Promise<Ed25519KeyPair> {
     };
   } catch (error) {
     console.error('[generateIdentityKeyPair] Error generating keypair:', error);
-    throw error;
+    // As a last resort, attempt tweetnacl once more
+    try {
+      const nacl = await import('tweetnacl');
+      const seed = nacl.randomBytes(32);
+      const kp = nacl.sign.keyPair.fromSeed(seed);
+      const publicKeyHex = Array.from(kp.publicKey).map((b: number) => (b as number).toString(16).padStart(2, '0')).join('');
+      const privateKeyHex = Array.from(seed).map((b: number) => (b as number).toString(16).padStart(2, '0')).join('');
+      provider = 'nacl';
+      return {
+        publicKey: kp.publicKey,
+        privateKey: seed,
+        publicKeyHex,
+        privateKeyHex,
+      };
+    } catch (fallbackError) {
+      console.error('[generateIdentityKeyPair] Final fallback failed:', fallbackError);
+      throw error;
+    }
   }
 }
 
@@ -239,12 +267,25 @@ export async function signEd25519(
   const dataBytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
   if (provider === 'nacl') {
     const nacl = await import('tweetnacl');
-    // tweetnacl requires 64-byte secret key; derive from seed
-    const kp = nacl.sign.keyPair.fromSeed(privateKey);
-    return nacl.sign.detached(dataBytes, kp.secretKey);
+    try {
+      const kp = nacl.sign.keyPair.fromSeed(privateKey);
+      return nacl.sign.detached(dataBytes, kp.secretKey);
+    } catch (naclErr) {
+      console.warn('[signEd25519] tweetnacl sign failed, attempting noble:', naclErr);
+      ensureSHA512Initialized();
+      return await sign(dataBytes, privateKey);
+    }
   } else {
-    ensureSHA512Initialized();
-    return await sign(dataBytes, privateKey);
+    try {
+      ensureSHA512Initialized();
+      return await sign(dataBytes, privateKey);
+    } catch (nobleErr) {
+      console.warn('[signEd25519] noble sign failed, falling back to tweetnacl:', nobleErr);
+      const nacl = await import('tweetnacl');
+      const kp = nacl.sign.keyPair.fromSeed(privateKey);
+      provider = 'nacl';
+      return nacl.sign.detached(dataBytes, kp.secretKey);
+    }
   }
 }
 
@@ -259,10 +300,23 @@ export async function verifyEd25519(
   const dataBytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
   if (provider === 'nacl') {
     const nacl = await import('tweetnacl');
-    return nacl.sign.detached.verify(dataBytes, signature, publicKey);
+    try {
+      return nacl.sign.detached.verify(dataBytes, signature, publicKey);
+    } catch (naclErr) {
+      console.warn('[verifyEd25519] tweetnacl verify failed, attempting noble:', naclErr);
+      ensureSHA512Initialized();
+      return await verify(signature, dataBytes, publicKey);
+    }
   } else {
-    ensureSHA512Initialized();
-    return await verify(signature, dataBytes, publicKey);
+    try {
+      ensureSHA512Initialized();
+      return await verify(signature, dataBytes, publicKey);
+    } catch (nobleErr) {
+      console.warn('[verifyEd25519] noble verify failed, falling back to tweetnacl:', nobleErr);
+      const nacl = await import('tweetnacl');
+      provider = 'nacl';
+      return nacl.sign.detached.verify(dataBytes, signature, publicKey);
+    }
   }
 }
 
