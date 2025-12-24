@@ -57,8 +57,8 @@ function initializeSHA512() {
       return Promise.resolve(sha512(concatBytes(...m)));
     };
     
-    // Set up SHA-512 for @noble/ed25519 v2.3.0+
-    // The library uses etc.sha512Sync and etc.sha512Async
+    // Set up SHA-512 for @noble/ed25519 (v2+ / v3)
+    // The library reads from etc.sha512Sync/Async in browser builds
     // @ts-ignore - these properties may not exist in types but are required at runtime
     const ed25519Any = ed25519 as any;
     
@@ -67,6 +67,16 @@ function initializeSHA512() {
       ed25519Any.etc.sha512Sync = sha512SyncFn;
       ed25519Any.etc.sha512Async = sha512AsyncFn;
       console.log('[Crypto] Set SHA-512 on ed25519.etc');
+
+      // Also set on nested hashes bag if present (some versions expect etc.hashes.sha512)
+      if (ed25519Any.etc.hashes) {
+        ed25519Any.etc.hashes.sha512 = sha512SyncFn;
+        console.log('[Crypto] Set SHA-512 on ed25519.etc.hashes');
+      } else {
+        // Create hashes bag to satisfy checks in newer builds
+        ed25519Any.etc.hashes = { sha512: sha512SyncFn };
+        console.log('[Crypto] Created ed25519.etc.hashes with sha512');
+      }
     } else {
       throw new Error('ed25519.etc not found - cannot set SHA-512');
     }
@@ -78,7 +88,7 @@ function initializeSHA512() {
     utils.sha512Async = sha512AsyncFn;
     
     // Verify it was set on etc (the primary location)
-    if (!ed25519Any.etc?.sha512Sync) {
+    if (!ed25519Any.etc?.sha512Sync && !ed25519Any.etc?.hashes?.sha512) {
       throw new Error('Failed to set etc.sha512Sync');
     }
     

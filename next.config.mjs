@@ -1,3 +1,4 @@
+import path from 'path';
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
@@ -10,8 +11,8 @@ const nextConfig = {
     unoptimized: true,
   },
   turbopack: {
-    // Treat this folder (pocketbridge) as the workspace root
-    root: '.',
+    // Absolute path to the workspace root to silence informational note
+    root: path.resolve(process.cwd()),
   },
   // Note: For full PWA support in production, integrate next-pwa or workbox.
 };
