@@ -1,0 +1,43 @@
+{
+  "name": "PocketBridge",
+  "short_name": "PocketBridge",
+  "description": "End-to-end encrypted cross-device workspace",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F5F5F5",
+  "theme_color": "#2F80ED",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "icons": [
+    {
+      "src": "/icon-192.jpg",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.jpg",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "utilities"],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "Clipboard",
+      "short_name": "Clipboard",
+      "description": "Quick access to clipboard sync",
+      "url": "/clipboard",
+      "icons": [{ "src": "/icon-192.jpg", "sizes": "192x192" }]
+    },
+    {
+      "name": "Scratchpad",
+      "short_name": "Scratchpad",
+      "description": "Quick access to scratchpad",
+      "url": "/scratchpad",
+      "icons": [{ "src": "/icon-192.jpg", "sizes": "192x192" }]
+    }
+  ]
+}
