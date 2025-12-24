@@ -5,6 +5,7 @@
  */
 
 import Link from "next/link"
+import { useEffect, useState } from "react"
 import { usePathname } from "next/navigation"
 import { Clipboard, FileText, MessageSquare, FolderOpen, Settings, LayoutDashboard, KeyRound } from "lucide-react"
 import { cn } from "@/lib/utils"

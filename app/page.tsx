@@ -1,3 +1,5 @@
+"use client";
+ 
 /**
  * Dashboard page - overview of devices and quick actions
  */
