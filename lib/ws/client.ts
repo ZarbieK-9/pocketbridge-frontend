@@ -341,8 +341,9 @@ export class WebSocketClient {
       // Convert Buffer/Uint8Array to hex string
       if (typeof Buffer !== 'undefined' && Buffer.isBuffer(part)) {
         str = Buffer.from(part).toString('hex');
-      } else if (part instanceof Uint8Array) {
-        str = Array.from(part).map(b => b.toString(16).padStart(2, '0')).join('');
+      } else if (ArrayBuffer.isView(part) && part.constructor && part.constructor.name === 'Uint8Array') {
+        // part is a Uint8Array or similar
+        str = Array.from(new Uint8Array(part.buffer, part.byteOffset, part.byteLength)).map(b => b.toString(16).padStart(2, '0')).join('');
       } else {
         str = String(part);
       }
