@@ -6,8 +6,8 @@
  */
 
 import * as ed25519 from '@noble/ed25519';
-import { sha512 } from '@noble/hashes/sha2.js';
-import { concatBytes } from '@noble/hashes/utils.js';
+import { sha512 } from '@noble/hashes/sha512';
+import { concatBytes } from '@noble/hashes/utils';
 import { STORAGE_KEYS } from '@/lib/constants';
 import type { Ed25519KeyPair } from '@/types';
 
@@ -43,61 +43,25 @@ function initializeSHA512() {
   }
   
   try {
-    // Create the SHA-512 functions
-    const sha512SyncFn = (...m: Uint8Array[]) => {
-      if (!sha512 || !concatBytes) {
-        throw new Error('SHA-512 functions not available');
-      }
-      return sha512(concatBytes(...m));
-    };
-    
-    const sha512AsyncFn = (...m: Uint8Array[]) => {
-      if (!sha512 || !concatBytes) {
-        throw new Error('SHA-512 functions not available');
-      }
-      return Promise.resolve(sha512(concatBytes(...m)));
-    };
-    
-    // Set up SHA-512 for @noble/ed25519 (v2+ / v3)
-    // The library reads from etc.sha512Sync/Async in browser builds
-    // @ts-ignore - these properties may not exist in types but are required at runtime
-    const ed25519Any = ed25519 as any;
-    
-    // PRIMARY: Set on etc (this is what the library checks)
-    if (ed25519Any.etc) {
-      ed25519Any.etc.sha512Sync = sha512SyncFn;
-      ed25519Any.etc.sha512Async = sha512AsyncFn;
-      console.log('[Crypto] Set SHA-512 on ed25519.etc');
+    // Create SHA-512 composable function
+    const sha512Fn = (...m: Uint8Array[]) => sha512(concatBytes(...m));
 
-      // Also set on nested hashes bag if present (some versions expect etc.hashes.sha512)
-      if (ed25519Any.etc.hashes) {
-        ed25519Any.etc.hashes.sha512 = sha512SyncFn;
-        console.log('[Crypto] Set SHA-512 on ed25519.etc.hashes');
-      } else {
-        // Create hashes bag to satisfy checks in newer builds
-        ed25519Any.etc.hashes = { sha512: sha512SyncFn };
-        console.log('[Crypto] Created ed25519.etc.hashes with sha512');
-      }
-    } else {
-      throw new Error('ed25519.etc not found - cannot set SHA-512');
-    }
-    
-    // Also set on utils (for compatibility)
+    // Preferred API: set utils.sha512 for noble
+    // This is the supported extension point across versions
     // @ts-ignore
-    utils.sha512Sync = sha512SyncFn;
-    // @ts-ignore
-    utils.sha512Async = sha512AsyncFn;
-    
-    // Verify it was set on etc (the primary location)
-    if (!ed25519Any.etc?.sha512Sync && !ed25519Any.etc?.hashes?.sha512) {
-      throw new Error('Failed to set etc.sha512Sync');
+    (ed25519 as any).utils.sha512 = sha512Fn;
+
+    // Some builds check etc.hashes.sha512; set defensively
+    const ed25519Any = ed25519 as any;
+    if (ed25519Any.etc) {
+      ed25519Any.etc.hashes = ed25519Any.etc.hashes || {};
+      ed25519Any.etc.hashes.sha512 = sha512Fn;
     }
-    
+
     sha512Initialized = true;
     console.log('[Crypto] SHA-512 initialized for @noble/ed25519', {
-      hasEtcSha512Sync: !!ed25519Any.etc?.sha512Sync,
-      hasUtilsSha512Sync: !!(utils as any).sha512Sync,
-      etcKeys: ed25519Any.etc ? Object.keys(ed25519Any.etc) : [],
+      hasUtilsSha512: !!(utils as any).sha512,
+      hasEtcHashesSha512: !!(ed25519Any.etc?.hashes?.sha512),
     });
     provider = 'noble';
   } catch (error) {
@@ -126,16 +90,17 @@ if (typeof window !== 'undefined') {
 export function ensureSHA512Initialized() {
   if (typeof window !== 'undefined') {
     const ed25519Any = ed25519 as any;
-    // Check if etc.sha512Sync is set (the primary location)
+    // Check if utils.sha512 (preferred) is set
     // @ts-ignore
-    if (!sha512Initialized || !ed25519Any.etc?.sha512Sync) {
+    if (!sha512Initialized || !(utils as any).sha512) {
       console.log('[Crypto] SHA-512 not initialized, initializing now...');
       sha512Initialized = false; // Reset flag to allow retry
       try {
         initializeSHA512();
-        // Verify it was set on etc (the primary location)
-        if (!ed25519Any.etc?.sha512Sync && !ed25519Any.etc?.hashes?.sha512) {
-          throw new Error('SHA-512 initialization completed but etc.sha512Sync/hash is still not set');
+        // Verify it was set
+        // @ts-ignore
+        if (!(utils as any).sha512 && !ed25519Any.etc?.hashes?.sha512) {
+          throw new Error('SHA-512 initialization completed but utils/etc hash is still not set');
         }
         console.log('[Crypto] SHA-512 initialization successful');
       } catch (error) {

@@ -141,6 +141,19 @@ export class WebSocketClient {
   private async handleOpen(): Promise<void> {
     console.log('[Phase1] WebSocket connected, starting handshake');
     await this.sendClientHello();
+    // Flush any buffered messages
+    const pending: WSMessage[] = (this as any)._pendingMessages || [];
+    if (pending.length > 0) {
+      console.log(`[Phase1] Flushing ${pending.length} buffered message(s)`);
+      for (const msg of pending) {
+        try {
+          this.ws!.send(JSON.stringify(msg));
+        } catch (err) {
+          console.error('[Phase1] Failed to flush buffered message', err);
+        }
+      }
+      (this as any)._pendingMessages = [];
+    }
   }
 
   /**
@@ -513,7 +526,10 @@ export class WebSocketClient {
    */
   private send(message: WSMessage): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.error('[Phase1] WebSocket not open, cannot send message');
+      // Buffer message until socket opens
+      (this as any)._pendingMessages = (this as any)._pendingMessages || [];
+      (this as any)._pendingMessages.push(message);
+      console.warn('[Phase1] WebSocket not open, buffering message');
       return;
     }
 
