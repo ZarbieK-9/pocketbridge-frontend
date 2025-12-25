@@ -114,6 +114,10 @@ export class WebSocketClient {
       return;
     }
 
+    // Always reset handshake state on new connection attempt
+    this.handshakeState = {};
+    console.log('[Phase1] Handshake state reset for new connection attempt');
+
     this.updateStatus('connecting');
 
     try {
@@ -130,6 +134,7 @@ export class WebSocketClient {
       this.ws.onmessage = this.handleMessage.bind(this);
       this.ws.onerror = this.handleError.bind(this);
       this.ws.onclose = this.handleClose.bind(this);
+      console.log('[Phase1] WebSocket connection created');
     } catch (error) {
       this.handleError(error instanceof Error ? error : new Error('Connection failed'));
     }
@@ -648,6 +653,9 @@ export class WebSocketClient {
    */
   private handleClose(): void {
     console.log('[Phase1] WebSocket closed');
+    // Reset handshake state on close
+    this.handshakeState = {};
+    console.log('[Phase1] Handshake state reset on WebSocket close');
 
     this.stopHeartbeat();
     this.updateStatus('disconnected');
