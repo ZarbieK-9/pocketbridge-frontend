@@ -4,6 +4,7 @@
 
 "use client"
 
+import * as React from "react"
 import { MainLayout } from "@/components/layout/main-layout"
 import { Header } from "@/components/layout/header"
 import { Button } from "@/components/ui/button"
@@ -16,23 +17,30 @@ import { PWAInstaller } from "@/components/pwa-installer"
 import { DevicePresenceList } from "@/components/device-presence"
 import { SessionTimeout } from "@/components/session-timeout"
 
-// TODO: Get these from context/config
+// TODO: Get these from context/config (computed client-side to avoid SSR mismatch)
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 const USER_ID = 'test-user-id'; // TODO: Get from auth context
-const SESSION_EXPIRES = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
 export default function SettingsPage() {
+  const [deviceName, setDeviceName] = React.useState('Desktop');
+  const [sessionExpiresAt, setSessionExpiresAt] = React.useState<Date | null>(null);
+
+  React.useEffect(() => {
+    setDeviceName(`Desktop - ${new Date().toLocaleDateString()}`);
+    setSessionExpiresAt(new Date(Date.now() + 24 * 60 * 60 * 1000)); // 24 hours from mount
+  }, []);
   return (
     <MainLayout>
       <Header title="Settings" description="Manage your PocketBridge preferences" />
 
       <div className="p-6 space-y-6">
         {/* Session Status */}
+        {sessionExpiresAt && (
         <SessionTimeout 
-          expiresAt={SESSION_EXPIRES}
+          expiresAt={sessionExpiresAt}
           onRefresh={() => console.log('Refresh session')}
           onExpired={() => console.log('Session expired')}
-        />
+        />)}
 
         {/* Connected Devices */}
         <DevicePresenceList 
@@ -73,7 +81,7 @@ export default function SettingsPage() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="device-name">Device Name</Label>
-              <Input id="device-name" defaultValue={`Desktop - ${new Date().toLocaleDateString()}`} />
+              <Input id="device-name" value={deviceName} onChange={(e) => setDeviceName(e.target.value)} />
             </div>
             <div className="space-y-2">
               <Label htmlFor="device-id">Device ID</Label>

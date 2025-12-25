@@ -1,3 +1,5 @@
+"use client"
+
 /**
  * Cryptographic key generation and management - Phase 1
  * 
@@ -6,8 +8,8 @@
  */
 
 import * as ed25519 from '@noble/ed25519';
-import { sha512 } from '@noble/hashes/sha512';
-import { concatBytes } from '@noble/hashes/utils';
+import { sha512 } from '@noble/hashes/sha2.js';
+import { concatBytes } from '@noble/hashes/utils.js';
 import { STORAGE_KEYS } from '@/lib/constants';
 import type { Ed25519KeyPair } from '@/types';
 

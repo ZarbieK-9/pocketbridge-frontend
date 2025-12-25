@@ -1,3 +1,5 @@
+"use client"
+
 /**
  * Crypto module exports - Phase 1
  * Centralized access to all cryptographic utilities
