@@ -252,6 +252,7 @@ export class WebSocketClient {
     this.handshakeState.nonceC2 = nonceC2;
 
     // Sign: SHA256(user_id || device_id || nonce_c || nonce_s || server_ephemeral_pub)
+
     const signatureData = await this.hashForSignature(
       this.userId!,
       this.deviceId,
@@ -260,10 +261,21 @@ export class WebSocketClient {
       this.handshakeState.serverEphemeralPub
     );
 
+    // Log the signature data hash (hex)
+    const signatureDataHex = Array.from(signatureData).map(b => b.toString(16).padStart(2, '0')).join('');
+    console.log('[WSClient] Signature data hash:', signatureDataHex, '(length:', signatureData.length, ')');
+
+    // Log the public key (hex)
+    const publicKeyHex = this.identityKeyPair.publicKey
+      ? Array.from(this.identityKeyPair.publicKey).map(b => b.toString(16).padStart(2, '0')).join('')
+      : 'undefined';
+    console.log('[WSClient] PublicKey:', publicKeyHex);
+
     const signature = await signEd25519(this.identityKeyPair.privateKey, signatureData);
     const signatureHex = Array.from(signature)
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
+    console.log('[WSClient] ClientSignature:', signatureHex);
 
     const clientAuth: ClientAuth = {
       type: 'client_auth',
