@@ -7,114 +7,11 @@
  * Web Crypto API doesn't natively support Ed25519
  */
 
-import * as ed25519 from '@noble/ed25519';
-import { sha512 } from '@noble/hashes/sha2.js';
-import { concatBytes } from '@noble/hashes/utils.js';
+import * as nacl from 'tweetnacl';
 import { STORAGE_KEYS } from '@/lib/constants';
 import type { Ed25519KeyPair } from '@/types';
 
-// Re-export for convenience
-const { getPublicKey, sign, verify, utils } = ed25519;
-
-// Track initialization state
-let sha512Initialized = false;
-let provider: 'noble' | 'nacl' = 'noble';
-
-// Initialize @noble/ed25519 with SHA-512 for browser environments
-// This is required for @noble/ed25519 v2+ in browsers
-function initializeSHA512() {
-  if (typeof window === 'undefined') {
-    return; // Server-side, no need to initialize
-  }
-  
-  if (sha512Initialized) {
-    return; // Already initialized
-  }
-  
-  if (!globalThis.crypto?.getRandomValues) {
-    throw new Error('Web Crypto API not available. This app requires a modern browser.');
-  }
-  
-  // Check if imports are available
-  if (typeof sha512 === 'undefined' || typeof concatBytes === 'undefined') {
-    console.error('[Crypto] SHA-512 imports not available:', {
-      sha512: typeof sha512,
-      concatBytes: typeof concatBytes,
-    });
-    throw new Error('SHA-512 imports not available. Make sure @noble/hashes is installed and imported correctly.');
-  }
-  
-  try {
-    // Create SHA-512 composable function
-    const sha512Fn = (...m: Uint8Array[]) => sha512(concatBytes(...m));
-
-    // Preferred API: set utils.sha512 for noble
-    // This is the supported extension point across versions
-    // @ts-ignore
-    (ed25519 as any).utils.sha512 = sha512Fn;
-
-    // Some builds check etc.hashes.sha512; set defensively
-    const ed25519Any = ed25519 as any;
-    if (ed25519Any.etc) {
-      ed25519Any.etc.hashes = ed25519Any.etc.hashes || {};
-      ed25519Any.etc.hashes.sha512 = sha512Fn;
-    }
-
-    sha512Initialized = true;
-    console.log('[Crypto] SHA-512 initialized for @noble/ed25519', {
-      hasUtilsSha512: !!(utils as any).sha512,
-      hasEtcHashesSha512: !!(ed25519Any.etc?.hashes?.sha512),
-    });
-    provider = 'noble';
-  } catch (error) {
-    console.error('[Crypto] Failed to initialize SHA-512:', error);
-    console.error('[Crypto] Error details:', {
-      name: error instanceof Error ? error.name : 'Unknown',
-      message: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
-    });
-    // Fallback: use tweetnacl provider in browser
-    provider = 'nacl';
-    throw new Error(`Failed to initialize SHA-512: ${error instanceof Error ? error.message : String(error)}. Falling back to tweetnacl.`);
-  }
-}
-
-// Initialize immediately when module loads (for static imports)
-if (typeof window !== 'undefined') {
-  try {
-    initializeSHA512();
-  } catch (error) {
-    console.warn('[Crypto] Failed to initialize SHA-512 at module load (will retry on use):', error);
-  }
-}
-
-// Export initialization function for dynamic imports
-export function ensureSHA512Initialized() {
-  if (typeof window !== 'undefined') {
-    const ed25519Any = ed25519 as any;
-    // Check if utils.sha512 (preferred) is set
-    // @ts-ignore
-    if (!sha512Initialized || !(utils as any).sha512) {
-      console.log('[Crypto] SHA-512 not initialized, initializing now...');
-      sha512Initialized = false; // Reset flag to allow retry
-      try {
-        initializeSHA512();
-        // Verify it was set
-        // @ts-ignore
-        if (!(utils as any).sha512 && !ed25519Any.etc?.hashes?.sha512) {
-          throw new Error('SHA-512 initialization completed but utils/etc hash is still not set');
-        }
-        console.log('[Crypto] SHA-512 initialization successful');
-      } catch (error) {
-        console.error('[Crypto] Failed to initialize SHA-512 in ensureSHA512Initialized:', error);
-        provider = 'nacl';
-        throw error;
-      }
-    } else {
-      console.log('[Crypto] SHA-512 already initialized');
-    }
-  }
-}
+// Using tweetnacl exclusively to avoid SHA-512 noble initialization complexity
 
 // Cache for shared encryption key (derived from identity keypair)
 let cachedSharedKey: { publicKeyHex: string; key: CryptoKey } | null = null;
@@ -124,104 +21,26 @@ let cachedSharedKey: { publicKeyHex: string; key: CryptoKey } | null = null;
  * Uses @noble/ed25519 polyfill since Web Crypto API doesn't support Ed25519
  */
 export async function generateIdentityKeyPair(): Promise<Ed25519KeyPair> {
-  console.log('[generateIdentityKeyPair] Generating new Ed25519 keypair...');
-  
-  // Ensure SHA-512 is initialized before use
-  try {
-    ensureSHA512Initialized();
-  } catch (error) {
-    console.error('[generateIdentityKeyPair] Failed to initialize SHA-512:', error);
-    console.warn('[generateIdentityKeyPair] Falling back to tweetnacl for key generation');
-  }
-  
-  // Double-check initialization
-  if (typeof window !== 'undefined') {
-    // @ts-ignore
-    if (provider === 'noble' && !utils.sha512Sync) {
-      console.warn('[generateIdentityKeyPair] SHA-512 not visible on utils, switching to tweetnacl');
-      provider = 'nacl';
-    }
-    if (provider === 'noble') {
-      console.log('[generateIdentityKeyPair] SHA-512 verified, proceeding with key generation (noble)');
-    } else {
-      console.log('[generateIdentityKeyPair] Proceeding with key generation (tweetnacl)');
-    }
-  }
-  
-  try {
-    let privateKey: Uint8Array;
-    let publicKey: Uint8Array;
-
-    if (provider === 'noble') {
-      try {
-        // Generate private key (32 random bytes)
-        privateKey = utils.randomSecretKey();
-        console.log('[generateIdentityKeyPair] Private key generated (noble)');
-        // Derive public key from private key
-        console.log('[generateIdentityKeyPair] Deriving public key (noble)...');
-        publicKey = await getPublicKey(privateKey);
-        console.log('[generateIdentityKeyPair] Public key derived (noble)');
-      } catch (nobleError) {
-        console.warn('[generateIdentityKeyPair] Noble getPublicKey failed, falling back to tweetnacl:', nobleError);
-        provider = 'nacl';
-        const nacl = await import('tweetnacl');
-        const seed = nacl.randomBytes(32);
-        const kp = nacl.sign.keyPair.fromSeed(seed);
-        privateKey = seed;
-        publicKey = kp.publicKey;
-        console.log('[generateIdentityKeyPair] Keypair generated (tweetnacl)');
-      }
-    } else {
-      // Fallback to tweetnacl (fromSeed) for Ed25519
-      const nacl = await import('tweetnacl');
-      const seed = nacl.randomBytes(32);
-      const kp = nacl.sign.keyPair.fromSeed(seed);
-      privateKey = seed;
-      publicKey = kp.publicKey;
-      console.log('[generateIdentityKeyPair] Keypair generated (tweetnacl)');
-    }
-    
-    // Convert to hex for storage/transmission
-    const publicKeyHex = Array.from(publicKey)
-      .map((b: number) => (b as number).toString(16).padStart(2, '0'))
-      .join('');
-    const privateKeyHex = Array.from(privateKey)
-      .map((b: number) => (b as number).toString(16).padStart(2, '0'))
-      .join('');
-    
-    console.log('[generateIdentityKeyPair] Keypair generated successfully:', {
-      publicKeyHex: publicKeyHex.substring(0, 16) + '...',
-      privateKeyLength: privateKey.length,
-      publicKeyLength: publicKey.length,
-    });
-    
-    return {
-      publicKey,
-      privateKey,
-      publicKeyHex,
-      privateKeyHex,
-    };
-  } catch (error) {
-    console.error('[generateIdentityKeyPair] Error generating keypair:', error);
-    // As a last resort, attempt tweetnacl once more
-    try {
-      const nacl = await import('tweetnacl');
-      const seed = nacl.randomBytes(32);
-      const kp = nacl.sign.keyPair.fromSeed(seed);
-      const publicKeyHex = Array.from(kp.publicKey).map((b: number) => (b as number).toString(16).padStart(2, '0')).join('');
-      const privateKeyHex = Array.from(seed).map((b: number) => (b as number).toString(16).padStart(2, '0')).join('');
-      provider = 'nacl';
-      return {
-        publicKey: kp.publicKey,
-        privateKey: seed,
-        publicKeyHex,
-        privateKeyHex,
-      };
-    } catch (fallbackError) {
-      console.error('[generateIdentityKeyPair] Final fallback failed:', fallbackError);
-      throw error;
-    }
-  }
+  console.log('[generateIdentityKeyPair] Generating new Ed25519 keypair (tweetnacl)...');
+  const seed = nacl.randomBytes(32);
+  const kp = nacl.sign.keyPair.fromSeed(seed);
+  const publicKeyHex = Array.from(kp.publicKey)
+    .map((b: number) => (b as number).toString(16).padStart(2, '0'))
+    .join('');
+  const privateKeyHex = Array.from(seed)
+    .map((b: number) => (b as number).toString(16).padStart(2, '0'))
+    .join('');
+  console.log('[generateIdentityKeyPair] Keypair generated successfully (tweetnacl):', {
+    publicKeyHex: publicKeyHex.substring(0, 16) + '...',
+    privateKeyLength: seed.length,
+    publicKeyLength: kp.publicKey.length,
+  });
+  return {
+    publicKey: kp.publicKey,
+    privateKey: seed,
+    publicKeyHex,
+    privateKeyHex,
+  };
 }
 
 /**
@@ -232,28 +51,8 @@ export async function signEd25519(
   data: Uint8Array | string
 ): Promise<Uint8Array> {
   const dataBytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-  if (provider === 'nacl') {
-    const nacl = await import('tweetnacl');
-    try {
-      const kp = nacl.sign.keyPair.fromSeed(privateKey);
-      return nacl.sign.detached(dataBytes, kp.secretKey);
-    } catch (naclErr) {
-      console.warn('[signEd25519] tweetnacl sign failed, attempting noble:', naclErr);
-      ensureSHA512Initialized();
-      return await sign(dataBytes, privateKey);
-    }
-  } else {
-    try {
-      ensureSHA512Initialized();
-      return await sign(dataBytes, privateKey);
-    } catch (nobleErr) {
-      console.warn('[signEd25519] noble sign failed, falling back to tweetnacl:', nobleErr);
-      const nacl = await import('tweetnacl');
-      const kp = nacl.sign.keyPair.fromSeed(privateKey);
-      provider = 'nacl';
-      return nacl.sign.detached(dataBytes, kp.secretKey);
-    }
-  }
+  const kp = nacl.sign.keyPair.fromSeed(privateKey);
+  return nacl.sign.detached(dataBytes, kp.secretKey);
 }
 
 /**
@@ -265,26 +64,7 @@ export async function verifyEd25519(
   publicKey: Uint8Array
 ): Promise<boolean> {
   const dataBytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-  if (provider === 'nacl') {
-    const nacl = await import('tweetnacl');
-    try {
-      return nacl.sign.detached.verify(dataBytes, signature, publicKey);
-    } catch (naclErr) {
-      console.warn('[verifyEd25519] tweetnacl verify failed, attempting noble:', naclErr);
-      ensureSHA512Initialized();
-      return await verify(signature, dataBytes, publicKey);
-    }
-  } else {
-    try {
-      ensureSHA512Initialized();
-      return await verify(signature, dataBytes, publicKey);
-    } catch (nobleErr) {
-      console.warn('[verifyEd25519] noble verify failed, falling back to tweetnacl:', nobleErr);
-      const nacl = await import('tweetnacl');
-      provider = 'nacl';
-      return nacl.sign.detached.verify(dataBytes, signature, publicKey);
-    }
-  }
+  return nacl.sign.detached.verify(dataBytes, signature, publicKey);
 }
 
 /**

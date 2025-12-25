@@ -142,17 +142,27 @@ export class WebSocketClient {
     console.log('[Phase1] WebSocket connected, starting handshake');
     await this.sendClientHello();
     // Flush any buffered messages
-    const pending: WSMessage[] = (this as any)._pendingMessages || [];
+    const pending: WSMessage[] = Array.isArray((this as any)._pendingMessages) ? [...(this as any)._pendingMessages] : [];
     if (pending.length > 0) {
       console.log(`[Phase1] Flushing ${pending.length} buffered message(s)`);
+      const stillPending: WSMessage[] = [];
       for (const msg of pending) {
         try {
-          this.ws!.send(JSON.stringify(msg));
+          // Guard: only send if socket is open
+          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            stillPending.push(msg);
+            continue;
+          }
+          // Clone payload to avoid stale buffers (defensive)
+          const safeMsg: WSMessage = JSON.parse(JSON.stringify(msg));
+          this.ws.send(JSON.stringify(safeMsg));
         } catch (err) {
           console.error('[Phase1] Failed to flush buffered message', err);
+          // Keep message for retry on next open
+          stillPending.push(msg);
         }
       }
-      (this as any)._pendingMessages = [];
+      (this as any)._pendingMessages = stillPending;
     }
   }
 
@@ -527,13 +537,25 @@ export class WebSocketClient {
   private send(message: WSMessage): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       // Buffer message until socket opens
-      (this as any)._pendingMessages = (this as any)._pendingMessages || [];
-      (this as any)._pendingMessages.push(message);
+      const queue: WSMessage[] = (this as any)._pendingMessages || [];
+      // Clone message to avoid retaining references to detached buffers
+      const safeMsg: WSMessage = JSON.parse(JSON.stringify(message));
+      queue.push(safeMsg);
+      (this as any)._pendingMessages = queue;
       console.warn('[Phase1] WebSocket not open, buffering message');
       return;
     }
 
-    this.ws.send(JSON.stringify(message));
+    try {
+      // Clone before sending to avoid DOMExceptions from stale objects
+      const safeMsg: WSMessage = JSON.parse(JSON.stringify(message));
+      this.ws.send(JSON.stringify(safeMsg));
+    } catch (err) {
+      console.error('[Phase1] WebSocket send failed, buffering for retry', err);
+      const queue: WSMessage[] = (this as any)._pendingMessages || [];
+      queue.push(JSON.parse(JSON.stringify(message)));
+      (this as any)._pendingMessages = queue;
+    }
   }
 
   /**

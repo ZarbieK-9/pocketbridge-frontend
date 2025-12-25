@@ -15,7 +15,6 @@ export {
   importAESKey,
   exportAESKey,
   deriveSharedEncryptionKey,
-  ensureSHA512Initialized,
 } from './keys';
 
 export { encryptPayload, decryptPayload } from './encryption';
@@ -52,16 +51,9 @@ export async function initializeCrypto(): Promise<{
   console.log('[initializeCrypto] Starting initialization...');
   
   try {
-    // Import the keys module - this will trigger the SHA-512 initialization
     const keysModule = await import('./keys');
-    console.log('[initializeCrypto] Module imported successfully');
-    
-    // Explicitly ensure SHA-512 is initialized (for dynamic imports)
-    if (typeof window !== 'undefined' && keysModule.ensureSHA512Initialized) {
-      keysModule.ensureSHA512Initialized();
-      console.log('[initializeCrypto] SHA-512 initialization verified');
-    }
-    
+    console.log('[initializeCrypto] Keys module imported successfully');
+
     const {
       generateIdentityKeyPair,
       saveIdentityKeyPair,
