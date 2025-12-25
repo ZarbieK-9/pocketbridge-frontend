@@ -335,7 +335,22 @@ export class WebSocketClient {
    */
   private async hashForSignature(...parts: (string | number)[]): Promise<Uint8Array> {
     const encoder = new TextEncoder();
-    const combined = parts.map(p => encoder.encode(String(p)));
+    const combined: Uint8Array[] = [];
+    parts.forEach((part, idx) => {
+      let str: string;
+      // Convert Buffer/Uint8Array to hex string
+      if (typeof Buffer !== 'undefined' && Buffer.isBuffer(part)) {
+        str = Buffer.from(part).toString('hex');
+      } else if (part instanceof Uint8Array) {
+        str = Array.from(part).map(b => b.toString(16).padStart(2, '0')).join('');
+      } else {
+        str = String(part);
+      }
+      const preview = str.length > 16 ? `${str.slice(0,8)}...${str.slice(-8)}` : str;
+      // eslint-disable-next-line no-console
+      console.log(`[HASH PART ${idx}] type: ${typeof part}, value: ${preview}`);
+      combined.push(encoder.encode(str));
+    });
     const totalLength = combined.reduce((sum, arr) => sum + arr.length, 0);
     const result = new Uint8Array(totalLength);
     let offset = 0;
