@@ -215,11 +215,14 @@ export class WebSocketClient {
     }
 
     // Validate we're in the right state (should have sent client_hello but not yet received server_hello)
+    // If we already have server values, this is a duplicate/stale server_hello - ignore it
     if (this.handshakeState.serverEphemeralPub || this.handshakeState.nonceS) {
+      console.error('[Phase1] Received duplicate server_hello. Ignoring.');
       return;
     }
 
-    // Store server ephemeral public key and nonce
+    // Store server ephemeral public key and nonce IMMEDIATELY to prevent race conditions
+    // These values must match what the backend used when computing its signature
     this.handshakeState.serverEphemeralPub = message.server_ephemeral_pub;
     this.handshakeState.nonceS = message.nonce_s;
 
@@ -280,6 +283,12 @@ export class WebSocketClient {
       this.handshakeState.serverEphemeralPub
     );
 
+    // Log the exact values being used for signature (to compare with backend)
+    console.log('[KEYS] user_id:', this.userId!);
+    console.log('[KEYS] device_id:', this.deviceId);
+    console.log('[KEYS] nonceC:', this.handshakeState.nonceC);
+    console.log('[KEYS] nonceS:', this.handshakeState.nonceS);
+    console.log('[KEYS] serverEphemeralPub:', this.handshakeState.serverEphemeralPub);
 
     // Only show keys for debug
     const signatureDataHex = Array.from(signatureData).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -674,8 +683,14 @@ export class WebSocketClient {
    * Handle WebSocket close
    */
   private handleClose(): void {
-    // Only reset handshake state if not already disconnected due to error
-    if (this.status !== 'error') {
+    // Don't reset handshake state if we're in the middle of processing a handshake
+    // Only reset if we're fully disconnected (not during an active handshake)
+    // The handshake state will be reset on the next connection attempt in connect()
+    if (this.status === 'connected') {
+      // If we were connected, we can safely reset
+      this.handshakeState = {};
+    } else if (this.status !== 'error' && this.status !== 'connecting') {
+      // Reset for other statuses except when actively connecting
       this.handshakeState = {};
     }
 
