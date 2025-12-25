@@ -118,15 +118,21 @@ export class WebSocketClient {
     this.handshakeState = {};
     console.log('[Phase1] Handshake state reset for new connection attempt');
 
-    this.updateStatus('connecting');
-
+    // Load identity keypair and set handshake state before opening WebSocket
     try {
-      // Load identity keypair
       this.identityKeyPair = await loadIdentityKeyPair();
       if (!this.identityKeyPair) {
         throw new Error('Identity keypair not found. Initialize crypto first.');
       }
       this.userId = this.identityKeyPair.publicKeyHex;
+
+      // Set handshakeState with at least identity info before opening WebSocket
+      // (Ephemeral keypair will be set in sendClientHello)
+      this.handshakeState = {
+        ...this.handshakeState,
+      };
+
+      this.updateStatus('connecting');
 
       // Create WebSocket connection
       this.ws = new WebSocket(this.url);
@@ -203,7 +209,10 @@ export class WebSocketClient {
    */
   private async handleServerHello(message: ServerHello): Promise<void> {
     if (!this.handshakeState.clientEphemeralKeyPair || !this.handshakeState.nonceC) {
-      throw new Error('Handshake state missing');
+      console.error('[Phase1] Handshake state error: clientEphemeralKeyPair or nonceC missing in handleServerHello. Resetting handshake state.');
+      this.handshakeState = {};
+      this.disconnect();
+      return;
     }
 
     // Store server ephemeral public key and nonce
@@ -332,17 +341,18 @@ export class WebSocketClient {
 
   /**
    * Hash data for signature
+   * Must match backend implementation exactly: convert to string, then hash UTF-8 encoding
    */
   private async hashForSignature(...parts: (string | number)[]): Promise<Uint8Array> {
     const encoder = new TextEncoder();
     const combined: Uint8Array[] = [];
     parts.forEach((part, idx) => {
       let str: string;
-      // Convert Buffer/Uint8Array to hex string
+      // Convert Buffer/Uint8Array to hex string (matching backend behavior)
       if (typeof Buffer !== 'undefined' && Buffer.isBuffer(part)) {
         str = Buffer.from(part).toString('hex');
       } else if (ArrayBuffer.isView(part) && part.constructor && part.constructor.name === 'Uint8Array') {
-        // part is a Uint8Array or similar
+        // part is a Uint8Array or similar - convert to hex string
         str = Array.from(new Uint8Array(part.buffer, part.byteOffset, part.byteLength)).map(b => b.toString(16).padStart(2, '0')).join('');
       } else {
         str = String(part);
@@ -350,8 +360,10 @@ export class WebSocketClient {
       const preview = str.length > 16 ? `${str.slice(0,8)}...${str.slice(-8)}` : str;
       // eslint-disable-next-line no-console
       console.log(`[HASH PART ${idx}] type: ${typeof part}, value: ${preview}`);
+      // Encode string as UTF-8 (matching backend: Buffer.from(str, 'utf8'))
       combined.push(encoder.encode(str));
     });
+    // Concatenate all UTF-8 encoded strings
     const totalLength = combined.reduce((sum, arr) => sum + arr.length, 0);
     const result = new Uint8Array(totalLength);
     let offset = 0;
@@ -359,6 +371,7 @@ export class WebSocketClient {
       result.set(arr, offset);
       offset += arr.length;
     }
+    // Hash the concatenated result (equivalent to backend's incremental hash.update)
     return new Uint8Array(await crypto.subtle.digest('SHA-256', result));
   }
 
@@ -678,9 +691,11 @@ export class WebSocketClient {
    */
   private handleClose(): void {
     console.log('[Phase1] WebSocket closed');
-    // Reset handshake state on close
-    this.handshakeState = {};
-    console.log('[Phase1] Handshake state reset on WebSocket close');
+    // Only reset handshake state if not already disconnected due to error
+    if (this.status !== 'error') {
+      this.handshakeState = {};
+      console.log('[Phase1] Handshake state reset on WebSocket close');
+    }
 
     this.stopHeartbeat();
     this.updateStatus('disconnected');
