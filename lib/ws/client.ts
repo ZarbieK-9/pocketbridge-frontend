@@ -89,7 +89,6 @@ export class WebSocketClient {
    */
   private handleServiceWorkerSync = async (event: Event) => {
     const customEvent = event as CustomEvent;
-    console.log('[Phase1] Service worker requested sync');
     
     // Try to reconnect if disconnected
     if (this.status === 'disconnected') {
@@ -110,13 +109,11 @@ export class WebSocketClient {
       this.ws &&
       (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)
     ) {
-      console.log('[Phase1] WebSocket already connected or connecting');
       return;
     }
 
     // Always reset handshake state on new connection attempt
     this.handshakeState = {};
-    console.log('[Phase1] Handshake state reset for new connection attempt');
 
     // Load identity keypair and set handshake state before opening WebSocket
     try {
@@ -140,7 +137,6 @@ export class WebSocketClient {
       this.ws.onmessage = this.handleMessage.bind(this);
       this.ws.onerror = this.handleError.bind(this);
       this.ws.onclose = this.handleClose.bind(this);
-      console.log('[Phase1] WebSocket connection created');
     } catch (error) {
       this.handleError(error instanceof Error ? error : new Error('Connection failed'));
     }
@@ -150,12 +146,10 @@ export class WebSocketClient {
    * Handle WebSocket open
    */
   private async handleOpen(): Promise<void> {
-    console.log('[Phase1] WebSocket connected, starting handshake');
     await this.sendClientHello();
     // Flush any buffered messages
     const pending: WSMessage[] = Array.isArray((this as any)._pendingMessages) ? [...(this as any)._pendingMessages] : [];
     if (pending.length > 0) {
-      console.log(`[Phase1] Flushing ${pending.length} buffered message(s)`);
       const stillPending: WSMessage[] = [];
       for (const msg of pending) {
         try {
@@ -195,10 +189,6 @@ export class WebSocketClient {
       nonceC,
     };
 
-    console.log('[Phase1] Sending client_hello:', {
-      clientEphemeralPub: clientEphemeralKeyPair.publicKeyHex.substring(0, 16) + '...',
-      nonceC: nonceC.substring(0, 16) + '...',
-    });
 
     // Send Client Hello
     const clientHello: ClientHello = {
@@ -226,7 +216,6 @@ export class WebSocketClient {
 
     // Validate we're in the right state (should have sent client_hello but not yet received server_hello)
     if (this.handshakeState.serverEphemeralPub || this.handshakeState.nonceS) {
-      console.warn('[Phase1] Received server_hello but handshake state already has server values. This might be a duplicate or stale message. Ignoring.');
       return;
     }
 
@@ -234,11 +223,6 @@ export class WebSocketClient {
     this.handshakeState.serverEphemeralPub = message.server_ephemeral_pub;
     this.handshakeState.nonceS = message.nonce_s;
 
-    console.log('[Phase1] Received server_hello:', {
-      serverEphemeralPub: message.server_ephemeral_pub.substring(0, 16) + '...',
-      nonceS: message.nonce_s.substring(0, 16) + '...',
-      clientNonceC: this.handshakeState.nonceC.substring(0, 16) + '...',
-    });
 
     // Verify server signature
     // Server signs: SHA256(client_ephemeral_pub || server_ephemeral_pub || nonce_c || nonce_s)
@@ -296,14 +280,6 @@ export class WebSocketClient {
       this.handshakeState.serverEphemeralPub
     );
 
-    // Log the exact values being hashed for debugging
-    console.log('[Phase1] Computing client signature with:', {
-      userId: this.userId!.substring(0, 16) + '...',
-      deviceId: this.deviceId,
-      nonceC: this.handshakeState.nonceC.substring(0, 16) + '...',
-      nonceS: this.handshakeState.nonceS.substring(0, 16) + '...',
-      serverEphemeralPub: this.handshakeState.serverEphemeralPub.substring(0, 16) + '...',
-    });
 
     // Only show keys for debug
     const signatureDataHex = Array.from(signatureData).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -336,15 +312,8 @@ export class WebSocketClient {
    * Handle Session Established (Step 4 of handshake)
    */
   private handleSessionEstablished(message: SessionEstablished): void {
-    console.log('[Phase1] Session established');
     this.lastAckDeviceSeq = message.last_ack_device_seq;
     this.sessionExpiresAt = message.expires_at || null;
-    
-    if (this.sessionExpiresAt) {
-      const expiresIn = this.sessionExpiresAt - Date.now();
-      const expiresInMinutes = Math.floor(expiresIn / 60000);
-      console.log(`[Phase1] Session expires in ${expiresInMinutes} minutes (${new Date(this.sessionExpiresAt).toISOString()})`);
-    }
 
     // Sync device sequence to ensure monotonicity
     // This prevents sending events with device_seq <= last_ack_device_seq
@@ -376,7 +345,7 @@ export class WebSocketClient {
   private async hashForSignature(...parts: (string | number)[]): Promise<Uint8Array> {
     const encoder = new TextEncoder();
     const combined: Uint8Array[] = [];
-    parts.forEach((part, idx) => {
+    parts.forEach((part) => {
       let str: string;
       // Convert Buffer/Uint8Array to hex string (matching backend behavior)
       if (typeof Buffer !== 'undefined' && Buffer.isBuffer(part)) {
@@ -387,9 +356,6 @@ export class WebSocketClient {
       } else {
         str = String(part);
       }
-      const preview = str.length > 16 ? `${str.slice(0,8)}...${str.slice(-8)}` : str;
-      // eslint-disable-next-line no-console
-      console.log(`[HASH PART ${idx}] type: ${typeof part}, value: ${preview}`);
       // Encode string as UTF-8 (matching backend: Buffer.from(str, 'utf8'))
       combined.push(encoder.encode(str));
     });
@@ -423,7 +389,6 @@ export class WebSocketClient {
    * Handle replay response
    */
   private async handleReplayResponse(message: ReplayResponse): Promise<void> {
-    console.log(`[Phase1] Received ${message.events.length} events in replay`);
 
     for (const event of message.events) {
       await this.handleIncomingEvent(event);
@@ -468,7 +433,6 @@ export class WebSocketClient {
             const registration = await navigator.serviceWorker.ready;
             await (registration as any).sync.register('sync-events');
           } catch (error) {
-            console.log('[Phase1] Background sync not available:', error);
           }
         }
       }
@@ -489,7 +453,6 @@ export class WebSocketClient {
    */
   async syncPending(): Promise<void> {
     if (!this.userId) {
-      console.warn('[Phase1] Cannot sync pending events: userId not set');
       return;
     }
 
@@ -510,7 +473,6 @@ export class WebSocketClient {
       const skippedSeq = pending.filter(e => e.device_seq <= this.lastAckDeviceSeq).length;
       const skippedUserId = pending.filter(e => e.user_id !== this.userId).length;
       
-      console.log(`[Phase1] Skipping ${skipped} invalid events (${skippedSeq} bad seq, ${skippedUserId} wrong user_id)`);
       
       // Acknowledge the skipped events with bad sequence as they're likely duplicates
     for (const event of pending) {
@@ -520,7 +482,6 @@ export class WebSocketClient {
       }
     }
 
-    console.log(`[Phase1] Syncing ${validPending.length} pending events`);
 
     for (const event of validPending) {
       await this.sendEvent(event);
@@ -554,7 +515,7 @@ export class WebSocketClient {
           console.error('[Phase1] Server error:', message.payload);
           break;
         default:
-          console.warn('[Phase1] Unknown message type:', message.type);
+          // Unknown message type
       }
     } catch (error) {
       console.error('[Phase1] Failed to parse message:', error);
@@ -597,7 +558,6 @@ export class WebSocketClient {
    * Handle acknowledgment from server
    */
   private handleAck(ack: { device_seq: number }): void {
-    console.log('[Phase1] Received ack for device_seq:', ack.device_seq);
     this.lastAckDeviceSeq = ack.device_seq;
 
     const queue = getEventQueue();
@@ -615,7 +575,6 @@ export class WebSocketClient {
       const safeMsg: WSMessage = JSON.parse(JSON.stringify(message));
       queue.push(safeMsg);
       (this as any)._pendingMessages = queue;
-      console.warn('[Phase1] WebSocket not open, buffering message');
       return;
     }
 
@@ -639,8 +598,6 @@ export class WebSocketClient {
 
     this.heartbeatTimer = setInterval(() => {
       // Send ping (if server supports it)
-      // For now, just log
-      console.log('[Phase1] Heartbeat');
     }, WS_HEARTBEAT_INTERVAL);
   }
 
@@ -662,7 +619,6 @@ export class WebSocketClient {
 
     // Only reconnect if the previous WebSocket is fully closed
     if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
-      console.log('[Phase1] Not scheduling reconnect: WebSocket not fully closed');
       return;
     }
 
@@ -675,14 +631,12 @@ export class WebSocketClient {
     const delay = Math.max(minDelay, Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelay));
     this.reconnectAttempts++;
 
-    console.log(`[Phase1] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
 
     this.reconnectTimer = setTimeout(() => {
       // Double-check socket is still closed before reconnecting
       if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
         this.connect();
       } else {
-        console.log('[Phase1] Skipping reconnect: WebSocket not closed');
       }
     }, delay);
   }
@@ -720,11 +674,9 @@ export class WebSocketClient {
    * Handle WebSocket close
    */
   private handleClose(): void {
-    console.log('[Phase1] WebSocket closed');
     // Only reset handshake state if not already disconnected due to error
     if (this.status !== 'error') {
       this.handshakeState = {};
-      console.log('[Phase1] Handshake state reset on WebSocket close');
     }
 
     this.stopHeartbeat();
@@ -741,7 +693,6 @@ export class WebSocketClient {
    */
   private updateStatus(status: ConnectionStatus): void {
     this.status = status;
-    console.log('[Phase1] Connection status:', status);
 
     this.statusHandlers.forEach(handler => {
       try {
