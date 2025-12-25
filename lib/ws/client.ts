@@ -266,21 +266,18 @@ export class WebSocketClient {
       this.handshakeState.serverEphemeralPub
     );
 
-    // Log the signature data hash (hex)
+    // Only show keys for debug
     const signatureDataHex = Array.from(signatureData).map(b => b.toString(16).padStart(2, '0')).join('');
-    console.log('[WSClient] Signature data hash:', signatureDataHex, '(length:', signatureData.length, ')');
-
-    // Log the public key (hex)
     const publicKeyHex = this.identityKeyPair.publicKey
       ? Array.from(this.identityKeyPair.publicKey).map(b => b.toString(16).padStart(2, '0')).join('')
       : 'undefined';
-    console.log('[WSClient] PublicKey:', publicKeyHex);
-
     const signature = await signEd25519(this.identityKeyPair.privateKey, signatureData);
     const signatureHex = Array.from(signature)
       .map(b => b.toString(16).padStart(2, '0'))
       .join('');
-    console.log('[WSClient] ClientSignature:', signatureHex);
+    console.log('[KEYS] publicKey:', publicKeyHex);
+    console.log('[KEYS] signatureDataHash:', signatureDataHex);
+    console.log('[KEYS] clientSignature:', signatureHex);
 
     const clientAuth: ClientAuth = {
       type: 'client_auth',
