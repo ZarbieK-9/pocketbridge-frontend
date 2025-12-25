@@ -601,18 +601,30 @@ export class WebSocketClient {
   private scheduleReconnect(): void {
     this.stopReconnect();
 
+    // Only reconnect if the previous WebSocket is fully closed
+    if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+      console.log('[Phase1] Not scheduling reconnect: WebSocket not fully closed');
+      return;
+    }
+
     // Update status to reconnecting
     this.updateStatus('reconnecting');
 
-    // Exponential backoff: start at 3s, max 30s
+    // Exponential backoff: start at 3s, max 30s, with a minimum enforced delay
     const baseDelay = WS_RECONNECT_DELAY;
-    const delay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelay);
+    const minDelay = 1000; // 1s minimum delay
+    const delay = Math.max(minDelay, Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelay));
     this.reconnectAttempts++;
 
     console.log(`[Phase1] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
 
     this.reconnectTimer = setTimeout(() => {
-      this.connect();
+      // Double-check socket is still closed before reconnecting
+      if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
+        this.connect();
+      } else {
+        console.log('[Phase1] Skipping reconnect: WebSocket not closed');
+      }
     }, delay);
   }
 
@@ -657,7 +669,10 @@ export class WebSocketClient {
     this.stopHeartbeat();
     this.updateStatus('disconnected');
     this.sessionKeys = null;
-    this.scheduleReconnect();
+    // Only schedule reconnect if socket is fully closed
+    setTimeout(() => {
+      this.scheduleReconnect();
+    }, 100); // Small delay to ensure socket is closed
   }
 
   /**
