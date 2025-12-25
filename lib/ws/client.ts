@@ -181,6 +181,10 @@ export class WebSocketClient {
    * Send Client Hello (Step 1 of handshake)
    */
   private async sendClientHello(): Promise<void> {
+    // Reset handshake state completely before starting new handshake
+    // This ensures we don't use stale state from previous attempts
+    this.handshakeState = {};
+    
     // Generate ephemeral ECDH keypair
     const clientEphemeralKeyPair = await generateECDHKeyPair();
     const nonceC = generateHandshakeNonce(); // 32-byte hex nonce for handshake
@@ -190,6 +194,11 @@ export class WebSocketClient {
       clientEphemeralKeyPair,
       nonceC,
     };
+
+    console.log('[Phase1] Sending client_hello:', {
+      clientEphemeralPub: clientEphemeralKeyPair.publicKeyHex.substring(0, 16) + '...',
+      nonceC: nonceC.substring(0, 16) + '...',
+    });
 
     // Send Client Hello
     const clientHello: ClientHello = {
@@ -215,9 +224,21 @@ export class WebSocketClient {
       return;
     }
 
+    // Validate we're in the right state (should have sent client_hello but not yet received server_hello)
+    if (this.handshakeState.serverEphemeralPub || this.handshakeState.nonceS) {
+      console.warn('[Phase1] Received server_hello but handshake state already has server values. This might be a duplicate or stale message. Ignoring.');
+      return;
+    }
+
     // Store server ephemeral public key and nonce
     this.handshakeState.serverEphemeralPub = message.server_ephemeral_pub;
     this.handshakeState.nonceS = message.nonce_s;
+
+    console.log('[Phase1] Received server_hello:', {
+      serverEphemeralPub: message.server_ephemeral_pub.substring(0, 16) + '...',
+      nonceS: message.nonce_s.substring(0, 16) + '...',
+      clientNonceC: this.handshakeState.nonceC.substring(0, 16) + '...',
+    });
 
     // Verify server signature
     // Server signs: SHA256(client_ephemeral_pub || server_ephemeral_pub || nonce_c || nonce_s)
@@ -266,7 +287,7 @@ export class WebSocketClient {
     this.handshakeState.nonceC2 = nonceC2;
 
     // Sign: SHA256(user_id || device_id || nonce_c || nonce_s || server_ephemeral_pub)
-
+    // IMPORTANT: Use the exact values from the server_hello message we just received
     const signatureData = await this.hashForSignature(
       this.userId!,
       this.deviceId,
@@ -274,6 +295,15 @@ export class WebSocketClient {
       this.handshakeState.nonceS,
       this.handshakeState.serverEphemeralPub
     );
+
+    // Log the exact values being hashed for debugging
+    console.log('[Phase1] Computing client signature with:', {
+      userId: this.userId!.substring(0, 16) + '...',
+      deviceId: this.deviceId,
+      nonceC: this.handshakeState.nonceC.substring(0, 16) + '...',
+      nonceS: this.handshakeState.nonceS.substring(0, 16) + '...',
+      serverEphemeralPub: this.handshakeState.serverEphemeralPub.substring(0, 16) + '...',
+    });
 
     // Only show keys for debug
     const signatureDataHex = Array.from(signatureData).map(b => b.toString(16).padStart(2, '0')).join('');
