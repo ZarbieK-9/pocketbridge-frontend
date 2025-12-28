@@ -350,12 +350,20 @@ export class WebSocketClient {
     // signEd25519 returns hex string
     const signatureHex = typeof signature === 'string' ? signature : Array.from(signature).map(b => b.toString(16).padStart(2, '0')).join('');
 
+    // Get device name and type for registration
+    const { getOrCreateDeviceName } = await import('@/lib/utils/device');
+    const { getDeviceType } = await import('@/lib/utils/device');
+    const deviceName = getOrCreateDeviceName();
+    const deviceType = getDeviceType() === 'tablet' ? 'mobile' : getDeviceType(); // Map tablet to mobile
+    
     const clientAuth: ClientAuth = {
       type: 'client_auth',
       user_id: this.userId!,
       device_id: this.deviceId,
       client_signature: signatureHex,
       nonce_c2: nonceC2,
+      device_name: deviceName,
+      device_type: deviceType as 'mobile' | 'desktop' | 'web',
     };
 
     this.send({

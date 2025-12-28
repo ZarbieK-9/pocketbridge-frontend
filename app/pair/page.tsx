@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { CheckCircle2, XCircle, KeyRound, Copy, Check, QrCode } from 'lucide-react';
 import { parsePairingCode, generatePairingCode, type PairingData } from '@/lib/utils/pairing-code';
+import { getBackendApiUrl } from '@/lib/utils/pairing-code';
 import { setWsUrl, getWsUrl } from '@/lib/utils/storage';
 import { getOrCreateDeviceId, getOrCreateDeviceName, updateDeviceName } from '@/lib/utils/device';
 import { useRouter } from 'next/navigation';
@@ -288,6 +289,51 @@ export default function PairPage() {
 
       logger.info('Device paired successfully', { deviceName: data.deviceName });
 
+      // Mark onboarding as completed after successful pairing
+      if (identityKeyPair) {
+        const { completeOnboarding } = await import('@/lib/utils/user-profile');
+        completeOnboarding(identityKeyPair.publicKeyHex);
+      }
+
+      // Update device name on backend after pairing (non-blocking)
+      const updateDeviceNameOnBackend = async () => {
+        try {
+          const validatedName = validateDeviceName(newDeviceName);
+          const apiUrl = getBackendApiUrl();
+          const userId = identityKeyPair?.publicKeyHex;
+          
+          if (!userId || !deviceId) {
+            logger.warn('Cannot update device name: missing userId or deviceId');
+            return;
+          }
+          
+          const response = await fetch(`${apiUrl}/api/devices/${deviceId}/rename`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-User-ID': userId,
+            },
+            body: JSON.stringify({ device_name: validatedName }),
+          });
+          
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+            logger.warn('Failed to update device name on backend', { 
+              status: response.status,
+              error: errorData.error 
+            });
+          } else {
+            logger.info('Device name updated on backend', { deviceId, name: validatedName });
+          }
+        } catch (error) {
+          logger.error('Error updating device name on backend', error);
+          // Non-blocking: device name is saved locally even if backend update fails
+        }
+      };
+      
+      // Update device name on backend (don't await - non-blocking)
+      updateDeviceNameOnBackend();
+
       // Auto-connect - the useWebSocket hook will connect automatically when wsUrl changes
       // Redirect to home after connection is established
       const checkConnection = () => {
@@ -544,18 +590,158 @@ export default function PairPage() {
       <Header title="Pair Device" description={mode === 'receive' ? 'Enter code from another device' : 'Share your pairing code'} />
 
       <div className="p-6 space-y-6">
-        {/* Connection Status Indicator - Always Visible */}
-        <div className="flex items-center justify-between p-3 bg-muted rounded-lg border">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium">Connection Status:</span>
-            <ConnectionStatusIndicator
-              status={connectionStatus}
-              isConnected={isConnected}
-              error={connectionError}
-              showDetails={true}
-            />
-          </div>
-        </div>
+        {/* Device Profile Section - Always Visible */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Device Profile</CardTitle>
+            <CardDescription>
+              Your device name and information. This will be shown to other devices when pairing.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="device-profile-name">Device Name</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="device-profile-name"
+                  type="text"
+                  value={newDeviceName}
+                  onChange={(e) => {
+                    setNewDeviceName(e.target.value);
+                    setDeviceNameError(null);
+                  }}
+                  onBlur={async () => {
+                    if (newDeviceName && !deviceNameError) {
+                      const isValid = validateDeviceNameBeforePair();
+                      if (isValid) {
+                        // Always save locally
+                        const validatedName = validateDeviceName(newDeviceName);
+                        updateDeviceName(validatedName);
+                        setDeviceName(validatedName);
+                        
+                        // Update on backend if connected
+                        if (isConnected && identityKeyPair) {
+                          try {
+                            const apiUrl = getBackendApiUrl();
+                            const userId = identityKeyPair.publicKeyHex;
+                            
+                            const response = await fetch(`${apiUrl}/api/devices/${deviceId}/rename`, {
+                              method: 'POST',
+                              headers: {
+                                'Content-Type': 'application/json',
+                                'X-User-ID': userId,
+                              },
+                              body: JSON.stringify({ device_name: validatedName }),
+                            });
+                            
+                            if (response.ok) {
+                              logger.info('Device name updated on backend', { deviceId, name: validatedName });
+                            } else {
+                              logger.warn('Failed to update device name on backend', { status: response.status });
+                            }
+                          } catch (error) {
+                            logger.error('Error updating device name on backend', error);
+                            // Non-blocking: device name is saved locally
+                          }
+                        }
+                      }
+                    }
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.currentTarget.blur();
+                    }
+                  }}
+                  placeholder="Enter a name for this device"
+                  className={`flex-1 ${deviceNameError ? 'border-red-500' : ''}`}
+                  aria-invalid={!!deviceNameError}
+                  aria-describedby={deviceNameError ? 'device-name-error' : undefined}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    if (!newDeviceName || deviceNameError) return;
+                    const isValid = validateDeviceNameBeforePair();
+                    if (!isValid) return;
+                    
+                    try {
+                      const validatedName = validateDeviceName(newDeviceName);
+                      // Always save locally
+                      updateDeviceName(validatedName);
+                      setDeviceName(validatedName);
+                      setDeviceNameError(null);
+                      
+                      // Update on backend if connected
+                      if (isConnected && identityKeyPair) {
+                        const apiUrl = getBackendApiUrl();
+                        const userId = identityKeyPair.publicKeyHex;
+                        
+                        if (!userId) {
+                          logger.warn('Cannot update device name: user ID not available');
+                          return;
+                        }
+                        
+                        const response = await fetch(`${apiUrl}/api/devices/${deviceId}/rename`, {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'X-User-ID': userId,
+                          },
+                          body: JSON.stringify({ device_name: validatedName }),
+                        });
+                        
+                        if (response.ok) {
+                          logger.info('Device name updated', { deviceId, name: validatedName });
+                        } else {
+                          const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+                          setDeviceNameError(errorData.error || 'Failed to update device name');
+                        }
+                      } else {
+                        logger.info('Device name saved locally (will sync when connected)', { name: validatedName });
+                      }
+                    } catch (error) {
+                      logger.error('Error updating device name', error);
+                      if (error instanceof ValidationError) {
+                        setDeviceNameError(error.message);
+                      } else {
+                        setDeviceNameError('Failed to update device name');
+                      }
+                    }
+                  }}
+                  disabled={!newDeviceName || !!deviceNameError}
+                >
+                  Save
+                </Button>
+              </div>
+              {deviceNameError ? (
+                <p id="device-name-error" className="text-xs text-red-600" role="alert">
+                  {deviceNameError}
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {isConnected 
+                    ? 'Device name saved and synced to server'
+                    : 'Device name saved locally. Will sync when connected.'}
+                </p>
+              )}
+            </div>
+            
+            {/* Connection Status */}
+            <div className="pt-2 border-t">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">Connection Status:</span>
+                <ConnectionStatusIndicator
+                  status={connectionStatus}
+                  isConnected={isConnected}
+                  error={connectionError}
+                  showDetails={true}
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Mode Toggle */}
         <div className="flex gap-2 justify-center">
@@ -596,36 +782,6 @@ export default function PairPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="new-device-name">Device Name</Label>
-              <Input
-                id="new-device-name"
-                type="text"
-                value={newDeviceName}
-                onChange={(e) => {
-                  setNewDeviceName(e.target.value);
-                  setDeviceNameError(null);
-                }}
-                onBlur={() => {
-                  if (newDeviceName) {
-                    validateDeviceNameBeforePair();
-                  }
-                }}
-                placeholder="Enter a name for this device"
-                className={`w-full ${deviceNameError ? 'border-red-500' : ''}`}
-                aria-invalid={!!deviceNameError}
-                aria-describedby={deviceNameError ? 'device-name-error' : undefined}
-              />
-              {deviceNameError ? (
-                <p id="device-name-error" className="text-xs text-red-600" role="alert">
-                  {deviceNameError}
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Give this device a memorable name (e.g., "My iPhone", "Work Laptop")
-                </p>
-              )}
-            </div>
 
             <div className="space-y-2">
               <Label htmlFor="pairing-code">Pairing Code</Label>

@@ -7,6 +7,8 @@ import { BackgroundSync } from "@/components/background-sync"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { OfflineIndicator } from "@/components/offline-indicator"
 import { WebVitalsReporter } from "@/components/web-vitals-reporter"
+import { UserProfileRestore } from "@/components/user-profile-restore"
+import { OnboardingGuard } from "@/components/onboarding/onboarding-guard"
 import "@/lib/utils/debug" // Enable browser console debugging
 import "./globals.css"
 
@@ -90,7 +92,10 @@ export default function RootLayout({
           <ServiceWorkerRegister />
           <BackgroundSync />
           <WebVitalsReporter />
-          {children}
+          <UserProfileRestore />
+          <OnboardingGuard>
+            {children}
+          </OnboardingGuard>
           <OfflineIndicator />
           <Analytics />
         </ErrorBoundary>

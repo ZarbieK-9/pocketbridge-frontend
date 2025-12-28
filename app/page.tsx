@@ -11,16 +11,49 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Clipboard, FileText, MessageSquare, FolderOpen } from "lucide-react"
 import { DevicePresenceList } from "@/components/device-presence"
 import { useCrypto } from "@/hooks/use-crypto"
+import { loadUserProfile } from "@/lib/utils/user-profile"
+import { useEffect, useState } from "react"
 
 export default function DashboardPage() {
-  const { identityKeyPair } = useCrypto();
+  const { identityKeyPair, isInitialized } = useCrypto();
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+  const [userProfile, setUserProfile] = useState<ReturnType<typeof loadUserProfile>>(null);
+
+  useEffect(() => {
+    if (isInitialized && identityKeyPair) {
+      const profile = loadUserProfile();
+      if (profile && profile.userId === identityKeyPair.publicKeyHex) {
+        setUserProfile(profile);
+      }
+    }
+  }, [isInitialized, identityKeyPair]);
 
   return (
     <MainLayout>
       <Header title="Dashboard" description="Overview of your devices and recent activity" />
 
       <div className="p-6 space-y-6">
+        {/* User Profile Welcome */}
+        {userProfile && userProfile.displayName && (
+          <Card className="bg-primary/5 border-primary/20">
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-4">
+                <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
+                  <span className="text-lg font-semibold text-primary">
+                    {userProfile.displayName.charAt(0).toUpperCase()}
+                  </span>
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold">Welcome back, {userProfile.displayName}!</h2>
+                  <p className="text-sm text-muted-foreground">
+                    {userProfile.deviceCount ? `${userProfile.deviceCount} device(s) connected` : 'Getting started with PocketBridge'}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Quick Actions */}
         <Card>
           <CardHeader>

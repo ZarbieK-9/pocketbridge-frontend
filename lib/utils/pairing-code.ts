@@ -18,7 +18,7 @@ export interface PairingData {
 /**
  * Get the backend API URL
  */
-function getBackendApiUrl(): string {
+export function getBackendApiUrl(): string {
   if (typeof window === 'undefined') {
     return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
   }
