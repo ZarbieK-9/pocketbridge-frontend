@@ -13,11 +13,13 @@ import { setWsUrl, getWsUrl } from '@/lib/utils/storage';
 import { getOrCreateDeviceId, getOrCreateDeviceName, updateDeviceName } from '@/lib/utils/device';
 import { useRouter } from 'next/navigation';
 import { useCrypto } from '@/hooks/use-crypto';
+import { useWebSocket } from '@/hooks/use-websocket';
 import { validatePairingCode, validateDeviceName } from '@/lib/utils/validation';
 import { checkRateLimit } from '@/lib/utils/rate-limit';
 import { config } from '@/lib/config';
 import { logger } from '@/lib/utils/logger';
 import { ValidationError } from '@/lib/utils/errors';
+import { StatusBadge } from '@/components/ui/status-badge';
 
 type PairMode = 'receive' | 'share';
 
@@ -39,6 +41,18 @@ export default function PairPage() {
   const router = useRouter();
   const cryptoState = useCrypto();
   const { identityKeyPair, isInitialized, error: cryptoError } = cryptoState;
+  
+  // Get device ID and WebSocket URL for connection status
+  const deviceId = getOrCreateDeviceId();
+  
+  // Get WebSocket connection status - will connect automatically when crypto is ready
+  const currentWsUrl = wsUrl || getWsUrl() || config.wsUrl;
+  const { status: connectionStatus, isConnected, error: connectionError } = useWebSocket({
+    url: currentWsUrl,
+    deviceId,
+    autoConnect: isInitialized, // Only auto-connect if crypto is initialized
+    waitForCrypto: true,
+  });
 
   // Track client-side mount to prevent hydration mismatches
   useEffect(() => {
@@ -82,10 +96,9 @@ export default function PairPage() {
     if (mode === 'share' && isInitialized && identityKeyPair && isMounted && !generatingRef.current) {
       generatingRef.current = true; // Prevent duplicate generation
       
-      const generateMyPairingCode = async () => {
+          const generateMyPairingCode = async () => {
         try {
           // Rate limiting for pairing code generation
-          const deviceId = getOrCreateDeviceId();
           const rateLimit = checkRateLimit(`pairing:${deviceId}`, 'pairingCode');
           if (!rateLimit.allowed) {
             const resetIn = Math.ceil((rateLimit.resetAt - Date.now()) / 1000 / 60);
@@ -340,9 +353,12 @@ export default function PairPage() {
           {/* Connection Details - Show in receive mode too */}
           <Card className="bg-muted">
             <CardHeader>
-              <CardTitle className="text-base">Connection Details</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base">Connection Details</CardTitle>
+                <StatusBadge status={connectionStatus === 'connected' ? 'online' : connectionStatus === 'connecting' ? 'syncing' : 'offline'} />
+              </div>
             </CardHeader>
-            <CardContent className="space-y-2 text-left">
+            <CardContent className="space-y-3 text-left">
               <div className="text-sm">
                 <span className="font-medium">Device:</span>{' '}
                 {isMounted ? (deviceName || getOrCreateDeviceName() || 'Unknown Device') : '...'}
@@ -351,6 +367,21 @@ export default function PairPage() {
                 <span className="font-medium">Server:</span>{' '}
                 {isMounted ? (wsUrl || getWsUrl() || config.wsUrl || 'Not configured') : '...'}
               </div>
+              <div className="text-sm">
+                <span className="font-medium">Status:</span>{' '}
+                <span className={isConnected ? 'text-green-600' : connectionStatus === 'connecting' ? 'text-yellow-600' : 'text-red-600'}>
+                  {connectionStatus === 'connected' ? 'Connected' : 
+                   connectionStatus === 'connecting' ? 'Connecting...' : 
+                   connectionStatus === 'reconnecting' ? 'Reconnecting...' : 
+                   connectionStatus === 'error' ? 'Connection Error' : 
+                   'Disconnected'}
+                </span>
+              </div>
+              {connectionError && (
+                <div className="text-xs text-red-600 mt-2 p-2 bg-red-50 rounded">
+                  {connectionError.message}
+                </div>
+              )}
               {!isMounted && (
                 <div className="text-xs text-muted-foreground mt-2">
                   Loading connection details...
@@ -584,9 +615,12 @@ export default function PairPage() {
 
             <Card className="bg-muted">
               <CardHeader>
-                <CardTitle className="text-base">Connection Details</CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">Connection Details</CardTitle>
+                  <StatusBadge status={connectionStatus === 'connected' ? 'online' : connectionStatus === 'connecting' ? 'syncing' : 'offline'} />
+                </div>
               </CardHeader>
-              <CardContent className="space-y-2 text-left">
+              <CardContent className="space-y-3 text-left">
                 <div className="text-sm">
                   <span className="font-medium">Device:</span>{' '}
                   {isMounted ? (deviceName || getOrCreateDeviceName() || 'Unknown Device') : '...'}
@@ -595,6 +629,21 @@ export default function PairPage() {
                   <span className="font-medium">Server:</span>{' '}
                   {isMounted ? (wsUrl || getWsUrl() || config.wsUrl || 'Not configured') : '...'}
                 </div>
+                <div className="text-sm">
+                  <span className="font-medium">Status:</span>{' '}
+                  <span className={isConnected ? 'text-green-600' : connectionStatus === 'connecting' ? 'text-yellow-600' : 'text-red-600'}>
+                    {connectionStatus === 'connected' ? 'Connected' : 
+                     connectionStatus === 'connecting' ? 'Connecting...' : 
+                     connectionStatus === 'reconnecting' ? 'Reconnecting...' : 
+                     connectionStatus === 'error' ? 'Connection Error' : 
+                     'Disconnected'}
+                  </span>
+                </div>
+                {connectionError && (
+                  <div className="text-xs text-red-600 mt-2 p-2 bg-red-50 rounded">
+                    {connectionError.message}
+                  </div>
+                )}
                 {!isMounted && (
                   <div className="text-xs text-muted-foreground mt-2">
                     Loading connection details...
