@@ -44,9 +44,22 @@ export default function PairPage() {
   useEffect(() => {
     setIsMounted(true);
     const currentDeviceName = getOrCreateDeviceName();
-    setDeviceName(currentDeviceName);
-    setNewDeviceName(currentDeviceName); // Initialize with current device name
-    setWsUrlState(getWsUrl() || process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws');
+    const currentWsUrl = getWsUrl() || config.wsUrl || process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
+    
+    setDeviceName(currentDeviceName || 'Unknown Device');
+    setNewDeviceName(currentDeviceName || 'Unknown Device');
+    setWsUrlState(currentWsUrl);
+    
+    // Debug logging
+    if (process.env.NODE_ENV === 'development') {
+      logger.debug('Pair page initialized', {
+        deviceName: currentDeviceName,
+        wsUrl: currentWsUrl,
+        hasStoredWsUrl: !!getWsUrl(),
+        envWsUrl: process.env.NEXT_PUBLIC_WS_URL,
+        configWsUrl: config.wsUrl,
+      });
+    }
   }, []);
 
   const handleCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -324,6 +337,28 @@ export default function PairPage() {
 
         {mode === 'receive' && (
           <>
+          {/* Connection Details - Show in receive mode too */}
+          <Card className="bg-muted">
+            <CardHeader>
+              <CardTitle className="text-base">Connection Details</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2 text-left">
+              <div className="text-sm">
+                <span className="font-medium">Device:</span>{' '}
+                {isMounted ? (deviceName || getOrCreateDeviceName() || 'Unknown Device') : '...'}
+              </div>
+              <div className="text-sm">
+                <span className="font-medium">Server:</span>{' '}
+                {isMounted ? (wsUrl || getWsUrl() || config.wsUrl || 'Not configured') : '...'}
+              </div>
+              {!isMounted && (
+                <div className="text-xs text-muted-foreground mt-2">
+                  Loading connection details...
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           <Card>
           <CardHeader>
             <CardTitle>Enter Pairing Code</CardTitle>
@@ -553,11 +588,18 @@ export default function PairPage() {
               </CardHeader>
               <CardContent className="space-y-2 text-left">
                 <div className="text-sm">
-                  <span className="font-medium">Device:</span> {isMounted ? deviceName : '...'}
+                  <span className="font-medium">Device:</span>{' '}
+                  {isMounted ? (deviceName || getOrCreateDeviceName() || 'Unknown Device') : '...'}
                 </div>
                 <div className="text-sm">
-                  <span className="font-medium">Server:</span> {isMounted ? wsUrl : '...'}
+                  <span className="font-medium">Server:</span>{' '}
+                  {isMounted ? (wsUrl || getWsUrl() || config.wsUrl || 'Not configured') : '...'}
                 </div>
+                {!isMounted && (
+                  <div className="text-xs text-muted-foreground mt-2">
+                    Loading connection details...
+                  </div>
+                )}
               </CardContent>
             </Card>
 
