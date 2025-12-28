@@ -68,11 +68,19 @@ export async function generatePairingCode(data: PairingData): Promise<{ code: st
   console.log('[Pairing] Storing pairing code on backend:', { apiUrl, fullUrl, code });
   
       try {
+        // Add authentication header - use userId (public key hex) as X-User-ID
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        
+        // Add X-User-ID header for authentication
+        if (data.userId) {
+          headers['X-User-ID'] = data.userId;
+        }
+        
         const response = await fetch(fullUrl, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers,
           mode: 'cors', // Explicitly set CORS mode
           body: JSON.stringify({
         code,

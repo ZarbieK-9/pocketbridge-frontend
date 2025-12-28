@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { CheckCircle2, XCircle, KeyRound, Copy, Check } from 'lucide-react';
+import { CheckCircle2, XCircle, KeyRound, Copy, Check, QrCode } from 'lucide-react';
 import { parsePairingCode, generatePairingCode, type PairingData } from '@/lib/utils/pairing-code';
 import { setWsUrl, getWsUrl } from '@/lib/utils/storage';
 import { getOrCreateDeviceId, getOrCreateDeviceName, updateDeviceName } from '@/lib/utils/device';
@@ -19,7 +19,9 @@ import { checkRateLimit } from '@/lib/utils/rate-limit';
 import { config } from '@/lib/config';
 import { logger } from '@/lib/utils/logger';
 import { ValidationError } from '@/lib/utils/errors';
-import { StatusBadge } from '@/components/ui/status-badge';
+import { ConnectionDetailsCard } from '@/components/pair/connection-details-card';
+import { ConnectionProgress } from '@/components/pair/connection-progress';
+import { ConnectionStatusIndicator } from '@/components/pair/connection-status-indicator';
 
 type PairMode = 'receive' | 'share';
 
@@ -32,54 +34,83 @@ export default function PairPage() {
   const [myPairingCode, setMyPairingCode] = useState<string | null>(null);
   const [myQrCode, setMyQrCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [isMounted, setIsMounted] = useState(false);
   const [deviceName, setDeviceName] = useState<string>('');
   const [wsUrl, setWsUrlState] = useState<string>('');
   const [codeExpiresAt, setCodeExpiresAt] = useState<Date | null>(null);
   const [timeRemaining, setTimeRemaining] = useState<number>(0);
+  const [isScanning, setIsScanning] = useState(false);
+  const [isPairing, setIsPairing] = useState(false);
+  const [pairingStep, setPairingStep] = useState<'pairing' | 'connecting' | 'connected' | 'error'>('pairing');
+  const [deviceNameError, setDeviceNameError] = useState<string | null>(null);
+  const [cameraPermissionError, setCameraPermissionError] = useState<string | null>(null);
   const generatingRef = useRef(false); // Prevent duplicate generation
+  const scannerRef = useRef<any>(null);
+  const redirectTimersRef = useRef<{ timer?: NodeJS.Timeout; interval?: NodeJS.Timeout }>({});
+  const pairingCodeInputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
   const cryptoState = useCrypto();
   const { identityKeyPair, isInitialized, error: cryptoError } = cryptoState;
-  
-  // Get device ID and WebSocket URL for connection status
   const deviceId = getOrCreateDeviceId();
-  
-  // Get WebSocket connection status - will connect automatically when crypto is ready
-  const currentWsUrl = wsUrl || getWsUrl() || config.wsUrl;
+
+  // WebSocket connection status
   const { status: connectionStatus, isConnected, error: connectionError } = useWebSocket({
-    url: currentWsUrl,
+    url: wsUrl,
     deviceId,
-    autoConnect: isInitialized, // Only auto-connect if crypto is initialized
+    autoConnect: isInitialized && !!wsUrl && wsUrl !== 'Not configured',
     waitForCrypto: true,
   });
 
-  // Track client-side mount to prevent hydration mismatches
+  // Initialize device name and URL on mount
   useEffect(() => {
-    setIsMounted(true);
     const currentDeviceName = getOrCreateDeviceName();
-    const currentWsUrl = getWsUrl() || config.wsUrl || process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
+    const currentWsUrl = getWsUrl() || config.wsUrl || 'ws://localhost:3001/ws';
     
     setDeviceName(currentDeviceName || 'Unknown Device');
     setNewDeviceName(currentDeviceName || 'Unknown Device');
     setWsUrlState(currentWsUrl);
-    
-    // Debug logging
-    if (process.env.NODE_ENV === 'development') {
-      logger.debug('Pair page initialized', {
-        deviceName: currentDeviceName,
-        wsUrl: currentWsUrl,
-        hasStoredWsUrl: !!getWsUrl(),
-        envWsUrl: process.env.NEXT_PUBLIC_WS_URL,
-        configWsUrl: config.wsUrl,
-      });
-    }
   }, []);
 
   const handleCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value.replace(/\D/g, '').slice(0, 6);
     setPairingCode(value);
     setResult(null);
+    setDeviceNameError(null);
+  };
+
+  // Handle paste events for pairing code
+  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    const pastedText = e.clipboardData.getData('text').trim().replace(/\D/g, '').slice(0, 6);
+    setPairingCode(pastedText);
+    setResult(null);
+    setDeviceNameError(null);
+    
+    // Auto-focus and select all for easy replacement
+    if (pairingCodeInputRef.current) {
+      pairingCodeInputRef.current.focus();
+      pairingCodeInputRef.current.select();
+    }
+  };
+
+  // Validate device name before pairing
+  const validateDeviceNameBeforePair = (): boolean => {
+    if (!newDeviceName || newDeviceName.trim() === '') {
+      setDeviceNameError('Device name is required');
+      return false;
+    }
+    
+    try {
+      validateDeviceName(newDeviceName);
+      setDeviceNameError(null);
+      return true;
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        setDeviceNameError(error.message);
+      } else {
+        setDeviceNameError('Invalid device name');
+      }
+      return false;
+    }
   };
 
   // Generate pairing code and QR code for sharing
@@ -93,12 +124,13 @@ export default function PairPage() {
       return;
     }
 
-    if (mode === 'share' && isInitialized && identityKeyPair && isMounted && !generatingRef.current) {
+    if (mode === 'share' && isInitialized && identityKeyPair && !generatingRef.current && typeof window !== 'undefined') {
       generatingRef.current = true; // Prevent duplicate generation
       
-          const generateMyPairingCode = async () => {
+      const generateMyPairingCode = async () => {
         try {
           // Rate limiting for pairing code generation
+          const deviceId = getOrCreateDeviceId();
           const rateLimit = checkRateLimit(`pairing:${deviceId}`, 'pairingCode');
           if (!rateLimit.allowed) {
             const resetIn = Math.ceil((rateLimit.resetAt - Date.now()) / 1000 / 60);
@@ -172,7 +204,7 @@ export default function PairPage() {
 
       generateMyPairingCode();
     }
-  }, [mode, isInitialized, identityKeyPair, isMounted]);
+  }, [mode, isInitialized, identityKeyPair, wsUrl, deviceName]);
 
   // Countdown timer for pairing code expiration
   useEffect(() => {
@@ -186,7 +218,7 @@ export default function PairPage() {
       setTimeRemaining(remaining);
       
       // Auto-rotate code when expired
-      if (remaining === 0 && mode === 'share' && isInitialized && identityKeyPair && isMounted) {
+      if (remaining === 0 && mode === 'share' && isInitialized && identityKeyPair) {
         logger.info('Pairing code expired, generating new one');
         generatingRef.current = false; // Allow regeneration
         // Trigger regeneration by clearing state
@@ -198,14 +230,24 @@ export default function PairPage() {
     }, 1000); // Update every second
 
     return () => clearInterval(interval);
-  }, [codeExpiresAt, timeRemaining, mode, isInitialized, identityKeyPair, isMounted]);
+  }, [codeExpiresAt, timeRemaining, mode, isInitialized, identityKeyPair]);
 
-  const handlePair = async () => {
+  const handlePair = async (code?: string) => {
+    if (isPairing) return; // Prevent multiple pairing attempts
+    
+    // Validate device name first
+    if (!validateDeviceNameBeforePair()) {
+      return;
+    }
+    
+    const codeToUse = code || pairingCode;
     setResult(null); // Clear previous result
+    setIsPairing(true);
+    setPairingStep('pairing');
     
     try {
       // Validate pairing code
-      const validatedCode = validatePairingCode(pairingCode);
+      const validatedCode = validatePairingCode(codeToUse);
       
       logger.info('Attempting to pair with code', { codeLength: validatedCode.length });
       const data = await parsePairingCode(validatedCode);
@@ -213,53 +255,223 @@ export default function PairPage() {
       if (!data) {
         setResult({
           success: false,
-          message: 'Invalid pairing code. Please check and try again.',
+          message: 'Invalid or expired pairing code. Please check and try again.',
         });
+        setIsPairing(false);
+        setPairingStep('error');
         return;
       }
 
       setPairingData(data);
       setWsUrl(data.wsUrl); // Save to localStorage
       
-      // Validate and save device name if changed
-      if (newDeviceName && newDeviceName !== deviceName) {
-        try {
-          const validatedName = validateDeviceName(newDeviceName);
-          updateDeviceName(validatedName);
-          setDeviceName(validatedName);
-        } catch (error) {
-          logger.warn('Invalid device name, using existing', { error });
-          // Continue with existing device name
-        }
+      // Validate and save device name
+      try {
+        const validatedName = validateDeviceName(newDeviceName);
+        updateDeviceName(validatedName);
+        setDeviceName(validatedName);
+        setDeviceNameError(null);
+      } catch (error) {
+        logger.warn('Invalid device name, using existing', { error });
+        // Continue with existing device name
       }
       
       setWsUrlState(data.wsUrl); // Update state
+      setPairingStep('connecting');
       
       setResult({
         success: true,
-        message: `Successfully paired with ${data.deviceName || 'device'}. Identity keypair imported.`,
+        message: `Successfully paired with ${data.deviceName || 'device'}. Connecting...`,
       });
 
       logger.info('Device paired successfully', { deviceName: data.deviceName });
 
-      // Redirect to home after 2 seconds
-      setTimeout(() => {
+      // Auto-connect - the useWebSocket hook will connect automatically when wsUrl changes
+      // Redirect to home after connection is established
+      const checkConnection = () => {
+        if (isConnected) {
+          setPairingStep('connected');
+          // Clean up timers
+          if (redirectTimersRef.current.timer) {
+            clearTimeout(redirectTimersRef.current.timer);
+          }
+          if (redirectTimersRef.current.interval) {
+            clearInterval(redirectTimersRef.current.interval);
+          }
+          setIsPairing(false);
+          // Small delay to show "Connected" state
+          setTimeout(() => {
+            router.push('/');
+          }, 1000);
+        }
+      };
+      
+      // Check connection status periodically
+      redirectTimersRef.current.interval = setInterval(() => {
+        checkConnection();
+      }, 500);
+      
+      // Fallback redirect after 5 seconds
+      redirectTimersRef.current.timer = setTimeout(() => {
+        if (redirectTimersRef.current.interval) {
+          clearInterval(redirectTimersRef.current.interval);
+        }
+        setIsPairing(false);
         router.push('/');
-      }, 2000);
+      }, 5000);
     } catch (error) {
+      setIsPairing(false);
+      setPairingStep('error');
       logger.error('Failed to parse pairing code', error);
+      
+      // Provide more specific error messages
+      let errorMessage = 'Failed to pair. Please try again.';
       if (error instanceof ValidationError) {
-        setResult({
-          success: false,
-          message: error.message,
-        });
-      } else {
-        setResult({
-          success: false,
-          message: `Failed to pair: ${error instanceof Error ? error.message : String(error)}`,
-        });
+        errorMessage = error.message;
+      } else if (error instanceof Error) {
+        if (error.message.includes('Network error') || error.message.includes('fetch')) {
+          errorMessage = 'Cannot connect to server. Check your internet connection and try again.';
+        } else if (error.message.includes('expired')) {
+          errorMessage = 'This pairing code has expired. Please get a new code from the other device.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+      
+      setResult({
+        success: false,
+        message: errorMessage,
+      });
+    }
+  };
+
+  // Update pairing step based on connection status
+  useEffect(() => {
+    if (isPairing) {
+      if (isConnected) {
+        setPairingStep('connected');
+      } else if (connectionStatus === 'connecting' || connectionStatus === 'reconnecting') {
+        setPairingStep('connecting');
+      } else if (connectionStatus === 'error') {
+        setPairingStep('error');
       }
     }
+  }, [isPairing, isConnected, connectionStatus]);
+
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => {
+      if (redirectTimersRef.current.timer) {
+        clearTimeout(redirectTimersRef.current.timer);
+      }
+      if (redirectTimersRef.current.interval) {
+        clearInterval(redirectTimersRef.current.interval);
+      }
+      if (scannerRef.current) {
+        scannerRef.current.stop().catch(() => {
+          // Ignore stop errors
+        });
+      }
+    };
+  }, []);
+
+  // Auto-pair when 6 digits are entered (only once per code)
+  const pairingCodeRef = useRef<string>('');
+  useEffect(() => {
+    if (pairingCode.length === 6 && isInitialized && !isPairing && pairingCode !== pairingCodeRef.current) {
+      pairingCodeRef.current = pairingCode;
+      handlePair();
+    }
+  }, [pairingCode, isInitialized, isPairing]);
+
+  // QR Code Scanner
+  const startQRScanner = async () => {
+    try {
+      setCameraPermissionError(null);
+      
+      // Check camera permissions first
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        // Stop the stream immediately - we just needed to check permission
+        stream.getTracks().forEach(track => track.stop());
+      } catch (permError: any) {
+        if (permError.name === 'NotAllowedError' || permError.name === 'PermissionDeniedError') {
+          setCameraPermissionError('Camera permission denied. Please allow camera access in your browser settings.');
+        } else if (permError.name === 'NotFoundError' || permError.name === 'DevicesNotFoundError') {
+          setCameraPermissionError('No camera found. Please connect a camera and try again.');
+        } else {
+          setCameraPermissionError(`Camera error: ${permError.message}`);
+        }
+        setIsScanning(false);
+        return;
+      }
+
+      const { Html5Qrcode } = await import('html5-qrcode');
+      setIsScanning(true);
+      
+      const scanner = new Html5Qrcode('qr-reader');
+      scannerRef.current = scanner;
+      
+      // Determine QR box size based on screen size (mobile-friendly)
+      const isMobile = window.innerWidth < 768;
+      const qrboxSize = isMobile ? Math.min(250, window.innerWidth - 40) : 250;
+      
+      await scanner.start(
+        { facingMode: 'environment' },
+        {
+          fps: 10,
+          qrbox: { width: qrboxSize, height: qrboxSize },
+          aspectRatio: 1.0,
+        },
+        (decodedText) => {
+          // Try to parse as pairing code or JSON
+          try {
+            const parsed = JSON.parse(decodedText);
+            if (parsed.type === 'pocketbridge-pairing') {
+              // Extract pairing code from QR data or use the data directly
+              handlePair(parsed.code || decodedText);
+            } else {
+              // Try as pairing code directly
+              handlePair(decodedText);
+            }
+          } catch {
+            // Not JSON, try as pairing code
+            handlePair(decodedText);
+          }
+          
+          scanner.stop().then(() => {
+            setIsScanning(false);
+          }).catch(() => {
+            setIsScanning(false);
+          });
+        },
+        (errorMessage) => {
+          // Ignore scanning errors (just keep scanning)
+          // Only log if it's not a common "not found" error
+          if (!errorMessage.includes('No QR code found')) {
+            logger.debug('QR scanner error', { errorMessage });
+          }
+        }
+      );
+    } catch (error) {
+      logger.error('Failed to start QR scanner', error);
+      setIsScanning(false);
+      if (error instanceof Error) {
+        setCameraPermissionError(`Failed to start camera: ${error.message}`);
+      }
+    }
+  };
+
+  const stopQRScanner = async () => {
+    if (scannerRef.current) {
+      try {
+        await scannerRef.current.stop();
+      } catch (error) {
+        // Ignore stop errors
+      }
+      scannerRef.current = null;
+    }
+    setIsScanning(false);
   };
 
   const handleCopyCode = async () => {
@@ -330,12 +542,26 @@ export default function PairPage() {
       <Header title="Pair Device" description={mode === 'receive' ? 'Enter code from another device' : 'Share your pairing code'} />
 
       <div className="p-6 space-y-6">
+        {/* Connection Status Indicator - Always Visible */}
+        <div className="flex items-center justify-between p-3 bg-muted rounded-lg border">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">Connection Status:</span>
+            <ConnectionStatusIndicator
+              status={connectionStatus}
+              isConnected={isConnected}
+              error={connectionError}
+              showDetails={true}
+            />
+          </div>
+        </div>
+
         {/* Mode Toggle */}
         <div className="flex gap-2 justify-center">
           <Button
             variant={mode === 'receive' ? 'default' : 'outline'}
             onClick={() => setMode('receive')}
             size="sm"
+            aria-label="Switch to receive mode"
           >
             Receive
           </Button>
@@ -343,6 +569,7 @@ export default function PairPage() {
             variant={mode === 'share' ? 'default' : 'outline'}
             onClick={() => setMode('share')}
             size="sm"
+            aria-label="Switch to share mode"
           >
             Share
           </Button>
@@ -350,45 +577,14 @@ export default function PairPage() {
 
         {mode === 'receive' && (
           <>
-          {/* Connection Details - Show in receive mode too */}
-          <Card className="bg-muted">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-base">Connection Details</CardTitle>
-                <StatusBadge status={connectionStatus === 'connected' ? 'online' : connectionStatus === 'connecting' ? 'syncing' : 'offline'} />
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3 text-left">
-              <div className="text-sm">
-                <span className="font-medium">Device:</span>{' '}
-                {isMounted ? (deviceName || getOrCreateDeviceName() || 'Unknown Device') : '...'}
-              </div>
-              <div className="text-sm">
-                <span className="font-medium">Server:</span>{' '}
-                {isMounted ? (wsUrl || getWsUrl() || config.wsUrl || 'Not configured') : '...'}
-              </div>
-              <div className="text-sm">
-                <span className="font-medium">Status:</span>{' '}
-                <span className={isConnected ? 'text-green-600' : connectionStatus === 'connecting' ? 'text-yellow-600' : 'text-red-600'}>
-                  {connectionStatus === 'connected' ? 'Connected' : 
-                   connectionStatus === 'connecting' ? 'Connecting...' : 
-                   connectionStatus === 'reconnecting' ? 'Reconnecting...' : 
-                   connectionStatus === 'error' ? 'Connection Error' : 
-                   'Disconnected'}
-                </span>
-              </div>
-              {connectionError && (
-                <div className="text-xs text-red-600 mt-2 p-2 bg-red-50 rounded">
-                  {connectionError.message}
-                </div>
-              )}
-              {!isMounted && (
-                <div className="text-xs text-muted-foreground mt-2">
-                  Loading connection details...
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          {/* Connection Details */}
+          <ConnectionDetailsCard
+            deviceName={deviceName}
+            wsUrl={wsUrl}
+            connectionStatus={connectionStatus}
+            isConnected={isConnected}
+            connectionError={connectionError}
+          />
 
           <Card>
           <CardHeader>
@@ -404,42 +600,120 @@ export default function PairPage() {
                 id="new-device-name"
                 type="text"
                 value={newDeviceName}
-                onChange={(e) => setNewDeviceName(e.target.value)}
+                onChange={(e) => {
+                  setNewDeviceName(e.target.value);
+                  setDeviceNameError(null);
+                }}
+                onBlur={() => {
+                  if (newDeviceName) {
+                    validateDeviceNameBeforePair();
+                  }
+                }}
                 placeholder="Enter a name for this device"
-                className="w-full"
+                className={`w-full ${deviceNameError ? 'border-red-500' : ''}`}
+                aria-invalid={!!deviceNameError}
+                aria-describedby={deviceNameError ? 'device-name-error' : undefined}
               />
-              <p className="text-xs text-muted-foreground">
-                Give this device a memorable name (e.g., "My iPhone", "Work Laptop")
-              </p>
+              {deviceNameError ? (
+                <p id="device-name-error" className="text-xs text-red-600" role="alert">
+                  {deviceNameError}
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Give this device a memorable name (e.g., "My iPhone", "Work Laptop")
+                </p>
+              )}
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="pairing-code">Pairing Code</Label>
               <div className="flex items-center gap-2">
                 <Input
+                  ref={pairingCodeInputRef}
                   id="pairing-code"
                   type="text"
                   inputMode="numeric"
+                  pattern="[0-9]{6}"
                   maxLength={6}
                   value={pairingCode}
                   onChange={handleCodeChange}
+                  onPaste={handlePaste}
                   placeholder="000000"
                   className="text-center text-3xl font-mono font-bold tracking-widest h-16"
+                  aria-label="6-digit pairing code"
+                  aria-describedby="pairing-code-help"
+                  autoComplete="off"
+                  autoFocus
                 />
               </div>
-              <p className="text-xs text-muted-foreground">
-                Enter the 6-digit code displayed on the other device
+              <p id="pairing-code-help" className="text-xs text-muted-foreground">
+                Enter the 6-digit code displayed on the other device (or paste it)
               </p>
             </div>
 
-            <Button
-              onClick={handlePair}
-              disabled={Boolean(!isMounted || !isInitialized || pairingCode.length !== 6)}
-              className="w-full"
-            >
-              <KeyRound className="h-4 w-4 mr-2" />
-              Pair Device
-            </Button>
+            <div className="space-y-2">
+              <Button
+                onClick={() => handlePair()}
+                disabled={Boolean(!isInitialized || pairingCode.length !== 6 || isPairing || !!deviceNameError)}
+                className="w-full"
+                aria-label={pairingCode.length === 6 ? 'Pair device with entered code' : 'Enter 6-digit code to pair'}
+              >
+                {isPairing ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" aria-hidden="true"></div>
+                    Pairing...
+                  </>
+                ) : (
+                  <>
+                    <KeyRound className="h-4 w-4 mr-2" aria-hidden="true" />
+                    {pairingCode.length === 6 ? 'Pair Device' : 'Enter 6-digit Code'}
+                  </>
+                )}
+              </Button>
+              
+              <Button
+                onClick={isScanning ? stopQRScanner : startQRScanner}
+                variant="outline"
+                className="w-full"
+                disabled={!isInitialized || isPairing}
+                aria-label={isScanning ? 'Stop QR code scanner' : 'Start QR code scanner'}
+              >
+                <QrCode className="h-4 w-4 mr-2" aria-hidden="true" />
+                {isScanning ? 'Stop Scanner' : 'Scan QR Code'}
+              </Button>
+            </div>
+            
+            {cameraPermissionError && (
+              <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg" role="alert">
+                <p className="text-sm text-yellow-800 font-medium">Camera Permission Required</p>
+                <p className="text-xs text-yellow-700 mt-1">{cameraPermissionError}</p>
+              </div>
+            )}
+            
+            {isScanning && (
+              <div className="space-y-2">
+                <div id="qr-reader" className="w-full max-w-md mx-auto rounded-lg overflow-hidden border-2 border-primary"></div>
+                <p className="text-xs text-center text-muted-foreground">
+                  Point your camera at the QR code
+                </p>
+              </div>
+            )}
+
+            {/* Connection Progress Indicator */}
+            {isPairing && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Connection Progress</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <ConnectionProgress
+                    step={pairingStep}
+                    connectionStatus={connectionStatus}
+                    error={connectionError}
+                  />
+                </CardContent>
+              </Card>
+            )}
 
             {result && (
               <div className="space-y-4">
@@ -613,44 +887,13 @@ export default function PairPage() {
               </Card>
             )}
 
-            <Card className="bg-muted">
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Connection Details</CardTitle>
-                  <StatusBadge status={connectionStatus === 'connected' ? 'online' : connectionStatus === 'connecting' ? 'syncing' : 'offline'} />
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3 text-left">
-                <div className="text-sm">
-                  <span className="font-medium">Device:</span>{' '}
-                  {isMounted ? (deviceName || getOrCreateDeviceName() || 'Unknown Device') : '...'}
-                </div>
-                <div className="text-sm">
-                  <span className="font-medium">Server:</span>{' '}
-                  {isMounted ? (wsUrl || getWsUrl() || config.wsUrl || 'Not configured') : '...'}
-                </div>
-                <div className="text-sm">
-                  <span className="font-medium">Status:</span>{' '}
-                  <span className={isConnected ? 'text-green-600' : connectionStatus === 'connecting' ? 'text-yellow-600' : 'text-red-600'}>
-                    {connectionStatus === 'connected' ? 'Connected' : 
-                     connectionStatus === 'connecting' ? 'Connecting...' : 
-                     connectionStatus === 'reconnecting' ? 'Reconnecting...' : 
-                     connectionStatus === 'error' ? 'Connection Error' : 
-                     'Disconnected'}
-                  </span>
-                </div>
-                {connectionError && (
-                  <div className="text-xs text-red-600 mt-2 p-2 bg-red-50 rounded">
-                    {connectionError.message}
-                  </div>
-                )}
-                {!isMounted && (
-                  <div className="text-xs text-muted-foreground mt-2">
-                    Loading connection details...
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <ConnectionDetailsCard
+              deviceName={deviceName}
+              wsUrl={wsUrl}
+              connectionStatus={connectionStatus}
+              isConnected={isConnected}
+              connectionError={connectionError}
+            />
 
             <p className="text-sm text-muted-foreground text-center">
               This code includes your identity keypair. Keep it secure and only share with devices you trust.
