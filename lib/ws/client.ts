@@ -447,6 +447,21 @@ export class WebSocketClient {
    * Handle replay response (with pagination support)
    */
   private async handleReplayResponse(message: ReplayResponse): Promise<void> {
+    // Validate message structure
+    if (!message || typeof message !== 'object') {
+      logger.error('Invalid replay response: message is null or not an object', { message });
+      return;
+    }
+
+    if (!Array.isArray(message.events)) {
+      logger.error('Invalid replay response: events is not an array', {
+        hasEvents: !!message.events,
+        eventsType: typeof message.events,
+        messageKeys: Object.keys(message),
+      });
+      return;
+    }
+
     // Process events from this page
     for (const event of message.events) {
       await this.handleIncomingEvent(event);
@@ -578,7 +593,18 @@ export class WebSocketClient {
           await this.handleIncomingEvent(message.payload as EncryptedEvent);
           break;
         case 'replay_response':
-          await this.handleReplayResponse(message.payload as ReplayResponse);
+          // Handle both wrapped (with payload) and unwrapped replay responses
+          const replayMessage = message.payload || message;
+          if (replayMessage && typeof replayMessage === 'object' && 'events' in replayMessage && Array.isArray((replayMessage as any).events)) {
+            await this.handleReplayResponse(replayMessage as ReplayResponse);
+          } else {
+            logger.error('Invalid replay_response format', {
+              hasPayload: !!message.payload,
+              payloadType: typeof message.payload,
+              messageKeys: message ? Object.keys(message) : [],
+              replayMessageKeys: replayMessage && typeof replayMessage === 'object' ? Object.keys(replayMessage) : [],
+            });
+          }
           break;
         case 'session_expiring_soon':
           this.handleSessionExpiring(message.payload as SessionExpiringWarning);
