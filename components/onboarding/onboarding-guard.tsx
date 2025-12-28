@@ -22,11 +22,22 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
   const pathname = usePathname();
   const { identityKeyPair, isInitialized } = useCrypto();
   const [isChecking, setIsChecking] = useState(true);
+  const [hasRedirected, setHasRedirected] = useState(false);
+  const [isMounted, setIsMounted] = useState(false);
 
   // Routes that don't require onboarding
   const publicRoutes = ['/onboarding', '/pair'];
 
+  // Ensure component only runs on client
   useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  useEffect(() => {
+    // Don't run on server
+    if (!isMounted) {
+      return;
+    }
     // Don't check on public routes
     if (publicRoutes.includes(pathname)) {
       setIsChecking(false);
@@ -47,8 +58,9 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
     // Check onboarding status
     const completed = hasCompletedOnboarding(identityKeyPair.publicKeyHex);
     
-    if (!completed) {
+    if (!completed && !hasRedirected) {
       logger.info('Onboarding not completed, redirecting to onboarding page');
+      setHasRedirected(true);
       router.push('/onboarding');
       return;
     }
@@ -63,7 +75,12 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
     }
 
     setIsChecking(false);
-  }, [isInitialized, identityKeyPair, pathname, router]);
+  }, [isInitialized, identityKeyPair, pathname, router, hasRedirected, isMounted]);
+
+  // Don't render anything until mounted (prevents hydration mismatch)
+  if (!isMounted) {
+    return <>{children}</>;
+  }
 
   // Show loading state while checking
   if (isChecking && !publicRoutes.includes(pathname)) {
