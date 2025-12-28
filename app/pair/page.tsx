@@ -42,10 +42,10 @@ export default function PairPage() {
 
   // Track client-side mount to prevent hydration mismatches
   useEffect(() => {
+    setIsMounted(true);
     const currentDeviceName = getOrCreateDeviceName();
     setDeviceName(currentDeviceName);
     setNewDeviceName(currentDeviceName); // Initialize with current device name
-    setDeviceName(getOrCreateDeviceName());
     setWsUrlState(getWsUrl() || process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws');
   }, []);
 
