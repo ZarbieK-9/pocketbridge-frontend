@@ -250,7 +250,9 @@ export default function PairPage() {
       const validatedCode = validatePairingCode(codeToUse);
       
       logger.info('Attempting to pair with code', { codeLength: validatedCode.length });
-      const data = await parsePairingCode(validatedCode);
+      // Pass userId if available (for authentication)
+      const userId = identityKeyPair?.publicKeyHex;
+      const data = await parsePairingCode(validatedCode, userId);
       
       if (!data) {
         setResult({

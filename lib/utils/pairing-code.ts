@@ -136,8 +136,10 @@ export async function generatePairingCode(data: PairingData): Promise<{ code: st
  * Retrieves the code from the backend server
  * Returns null if code is invalid or expired
  * Automatically saves identity keypair if present
+ * @param code - The 6-digit pairing code
+ * @param userId - Optional user ID (public key hex) for authentication
  */
-export async function parsePairingCode(code: string): Promise<PairingData | null> {
+export async function parsePairingCode(code: string, userId?: string): Promise<PairingData | null> {
   if (!code || code.length !== 6 || !/^\d{6}$/.test(code)) {
     return null;
   }
@@ -145,14 +147,21 @@ export async function parsePairingCode(code: string): Promise<PairingData | null
   // Retrieve from backend
   const apiUrl = getBackendApiUrl();
   const fullUrl = `${apiUrl}/api/pairing/lookup/${code}`;
-  console.log('[Pairing] Looking up pairing code on backend:', { apiUrl, fullUrl, code });
+  console.log('[Pairing] Looking up pairing code on backend:', { apiUrl, fullUrl, code, hasUserId: !!userId });
   
       try {
+        // Add authentication header if userId is provided
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+        };
+        
+        if (userId) {
+          headers['X-User-ID'] = userId;
+        }
+        
         const response = await fetch(fullUrl, {
           method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers,
           mode: 'cors', // Explicitly set CORS mode
         });
 

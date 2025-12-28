@@ -8,10 +8,8 @@ const WS_QUEUE_KEY = 'ws_event_queue';
 
 // Install event - cache essential resources
 self.addEventListener('install', (event) => {
-  // Only log in development
-  if (process.env.NODE_ENV === 'development') {
-    console.log('[SW] Service Worker installing');
-  }
+  // Service workers don't have access to process.env, so we always log
+  console.log('[SW] Service Worker installing');
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll([
