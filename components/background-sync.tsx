@@ -26,12 +26,12 @@ function getWebSocketUrl(): string {
 
 export function BackgroundSync() {
   const deviceId = getOrCreateDeviceId();
-  const { isInitialized: cryptoInitialized } = useCrypto();
   const wsUrl = getWebSocketUrl();
+  // useWebSocket now handles waiting for crypto internally (waitForCrypto defaults to true)
   const { isConnected, sessionKeys, lastEvent } = useWebSocket({
     url: wsUrl,
     deviceId,
-    autoConnect: cryptoInitialized,
+    autoConnect: true, // Hook will wait for crypto automatically
   });
 
   // Automatically start background clipboard sync

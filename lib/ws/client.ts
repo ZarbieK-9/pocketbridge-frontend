@@ -124,7 +124,23 @@ export class WebSocketClient {
     try {
       this.identityKeyPair = await loadIdentityKeyPair();
       if (!this.identityKeyPair) {
-        throw new Error('Identity keypair not found. Initialize crypto first.');
+        // Try to initialize crypto if keypair is not found
+        logger.warn('Identity keypair not found, attempting to initialize crypto...');
+        try {
+          const { initializeCrypto } = await import('@/lib/crypto');
+          const { identityKeyPair } = await initializeCrypto();
+          if (!identityKeyPair) {
+            throw new Error('Failed to initialize crypto. Identity keypair is still null after initialization.');
+          }
+          this.identityKeyPair = identityKeyPair;
+          logger.info('Crypto initialized successfully during WebSocket connection');
+        } catch (initError) {
+          const errorMessage = initError instanceof Error ? initError.message : String(initError);
+          logger.error('Failed to initialize crypto during WebSocket connection', {
+            error: errorMessage,
+          });
+          throw new Error(`Identity keypair not found. Initialize crypto first. Crypto initialization failed: ${errorMessage}`);
+        }
       }
       this.userId = this.identityKeyPair.publicKeyHex;
 
