@@ -796,13 +796,55 @@ export class WebSocketClient {
    * Handle WebSocket error
    */
   private handleError(error: Error | Event): void {
-    console.error('[Phase1] WebSocket error:', error);
+    // Extract useful information from the error
+    let errorMessage = 'WebSocket error';
+    let errorDetails: Record<string, unknown> = {
+      url: this.url,
+      readyState: this.ws?.readyState,
+      readyStateText: this.ws?.readyState === WebSocket.CONNECTING ? 'CONNECTING' :
+                     this.ws?.readyState === WebSocket.OPEN ? 'OPEN' :
+                     this.ws?.readyState === WebSocket.CLOSING ? 'CLOSING' :
+                     this.ws?.readyState === WebSocket.CLOSED ? 'CLOSED' : 'UNKNOWN',
+    };
+
+    if (error instanceof Error) {
+      errorMessage = error.message;
+      errorDetails.errorName = error.name;
+      errorDetails.errorStack = error.stack;
+    } else if (error instanceof Event) {
+      errorMessage = `WebSocket error event: ${error.type}`;
+      errorDetails.eventType = error.type;
+      errorDetails.eventTarget = error.target;
+      // Try to get more info from the WebSocket
+      if (this.ws) {
+        errorDetails.wsUrl = this.ws.url;
+        errorDetails.wsReadyState = this.ws.readyState;
+        errorDetails.wsBufferedAmount = this.ws.bufferedAmount;
+      }
+    }
+
+    // Check if it's a connection error
+    if (this.ws?.readyState === WebSocket.CLOSED && !this.ws?.url) {
+      errorMessage = 'WebSocket connection failed - check URL and network connectivity';
+      errorDetails.suggestion = 'Verify the WebSocket URL is correct and the server is reachable';
+    }
+
+    console.error('[Phase1] WebSocket error:', {
+      message: errorMessage,
+      ...errorDetails,
+      rawError: error,
+    });
 
     this.updateStatus('error');
 
+    // Create a more informative error object
+    const informativeError = error instanceof Error 
+      ? error 
+      : new Error(`${errorMessage}. Check browser console and network tab for details.`);
+
     this.errorHandlers.forEach(handler => {
       try {
-        handler(error instanceof Error ? error : new Error('WebSocket error'));
+        handler(informativeError);
       } catch (err) {
         console.error('[Phase1] Error handler failed:', err);
       }
@@ -817,6 +859,26 @@ export class WebSocketClient {
   private handleClose(event?: CloseEvent): void {
     const closeCode = event?.code;
     const closeReason = event?.reason || '';
+    const wasClean = event?.wasClean ?? false;
+    
+    // Log close details for debugging
+    if (closeCode !== 1000 && closeCode !== 1001) {
+      // Not a normal closure or session rotation
+      logger.warn('WebSocket closed abnormally', {
+        code: closeCode,
+        reason: closeReason,
+        wasClean,
+        url: this.url,
+        previousStatus: this.status,
+      });
+      console.warn('[Phase1] WebSocket closed:', {
+        code: closeCode,
+        reason: closeReason,
+        wasClean,
+        url: this.url,
+        readyState: this.ws?.readyState,
+      });
+    }
 
     // Handle session key rotation (close code 1001)
     if (closeCode === 1001) {
