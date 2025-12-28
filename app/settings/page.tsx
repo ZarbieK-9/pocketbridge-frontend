@@ -66,10 +66,15 @@ export default function SettingsPage() {
       
       // Update device name on backend via API
       try {
+        if (!userId) {
+          logger.warn('Cannot update device name: user ID not available');
+          return;
+        }
         const response = await fetch(`${apiUrl}/api/devices/${deviceId}/rename`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
+            'X-User-ID': userId,
           },
           body: JSON.stringify({ device_name: validatedName }),
         });
