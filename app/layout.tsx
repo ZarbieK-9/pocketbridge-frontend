@@ -9,6 +9,7 @@ import { OfflineIndicator } from "@/components/offline-indicator"
 import { WebVitalsReporter } from "@/components/web-vitals-reporter"
 import { UserProfileRestore } from "@/components/user-profile-restore"
 import { OnboardingGuard } from "@/components/onboarding/onboarding-guard"
+import { ToastContainer } from "@/components/ui/toast"
 import "@/lib/utils/debug" // Enable browser console debugging
 import "./globals.css"
 
@@ -97,6 +98,7 @@ export default function RootLayout({
             {children}
           </OnboardingGuard>
           <OfflineIndicator />
+          <ToastContainer />
           <Analytics />
         </ErrorBoundary>
       </body>

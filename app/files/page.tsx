@@ -30,6 +30,8 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { Upload, FileIcon, Clock, Download } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { config } from '@/lib/config';
+import { SyncIndicator } from '@/components/sync-indicator';
+import { toast } from '@/components/ui/toast';
 
 const WS_URL = config.wsUrl;
 
@@ -52,6 +54,7 @@ export default function FilesPage() {
 
   const [transfers, setTransfers] = useState<FileTransfer[]>([]);
   const [incomingFiles, setIncomingFiles] = useState<Map<string, { metadata: any; chunks: Map<number, Uint8Array> }>>(new Map());
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'sending' | 'synced' | 'error'>('idle');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Handle incoming file events
@@ -59,6 +62,8 @@ export default function FilesPage() {
     if (lastEvent && sessionKeys) {
       if (lastEvent.type === 'file:metadata') {
         handleIncomingFileMetadata(lastEvent);
+        setSyncStatus('synced');
+        toast('File received from another device', 'success');
       } else if (lastEvent.type === 'file:chunk') {
         handleIncomingFileChunk(lastEvent);
       }
@@ -85,6 +90,7 @@ export default function FilesPage() {
         throw new ValidationError(`File too large. Maximum size: ${(MAX_FILE_SIZE / 1024 / 1024 / 1024).toFixed(1)}GB`);
       }
 
+      setSyncStatus('sending');
       const upload = await startFileUpload(file);
       
       const transfer: FileTransfer = {
@@ -95,6 +101,7 @@ export default function FilesPage() {
         status: 'uploading',
       };
       setTransfers((prev) => [...prev, transfer]);
+      toast(`Sending ${file.name} to all devices...`, 'info');
 
       // Upload chunks
       await uploadFileInChunks(file, upload, (progress) => {
@@ -334,7 +341,10 @@ export default function FilesPage() {
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">File Beaming</h1>
-        <StatusBadge status={isConnected ? 'online' : 'offline'} />
+        <div className="flex items-center gap-3">
+          <SyncIndicator status={syncStatus} />
+          <StatusBadge status={isConnected ? 'online' : 'offline'} />
+        </div>
       </div>
 
       {/* Upload Area */}

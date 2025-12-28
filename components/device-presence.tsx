@@ -6,10 +6,11 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Monitor, Smartphone, Globe, Circle } from 'lucide-react';
+import { Monitor, Smartphone, Globe, Circle, Activity, Clock } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { DeviceManagement } from '@/components/device-management';
 import { cn } from '@/lib/utils';
+import { formatDistanceToNow } from 'date-fns';
 
 export interface Device {
   device_id: string;
@@ -22,6 +23,8 @@ export interface Device {
 
 export interface DevicePresence extends Device {
   is_online: boolean;
+  last_activity?: string; // Last activity timestamp
+  event_count?: number; // Number of events sent/received
 }
 
 interface DevicePresenceListProps {
@@ -150,9 +153,25 @@ export function DevicePresenceList({ apiUrl, userId, className }: DevicePresence
                       )}
                     </p>
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    {formatLastSeen(device.last_seen)}
-                  </p>
+                  <div className="flex items-center gap-3 text-sm text-muted-foreground">
+                    <div className="flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      <span>{formatLastSeen(device.last_seen)}</span>
+                    </div>
+                    {device.last_activity && (
+                      <div className="flex items-center gap-1">
+                        <Activity className="h-3 w-3" />
+                        <span>
+                          Active {formatDistanceToNow(new Date(device.last_activity), { addSuffix: true })}
+                        </span>
+                      </div>
+                    )}
+                    {device.event_count !== undefined && (
+                      <span className="text-xs">
+                        {device.event_count} {device.event_count === 1 ? 'event' : 'events'}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
 

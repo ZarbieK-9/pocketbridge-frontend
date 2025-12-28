@@ -12,6 +12,8 @@
 import { useEffect, useState, useRef } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { useCrypto } from '@/hooks/use-crypto';
+import { SyncIndicator } from '@/components/sync-indicator';
+import { toast } from '@/components/ui/toast';
 import { useBackgroundClipboard } from '@/hooks/use-background-clipboard';
 import { getBackgroundClipboardSync } from '@/lib/background/clipboard-sync';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
@@ -32,6 +34,7 @@ export default function ClipboardPage() {
   });
 
   const [clipboardText, setClipboardText] = useState<string>('');
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'sending' | 'synced' | 'error'>('idle');
   const syncRef = useRef(getBackgroundClipboardSync());
 
   // Use automatic background clipboard sync (Apple-like)
@@ -41,8 +44,17 @@ export default function ClipboardPage() {
     lastEvent,
     onClipboardReceived: (text) => {
       setClipboardText(text);
+      setSyncStatus('synced');
+      toast('Clipboard synced across all devices', 'success');
     },
   });
+
+  // Track sync status when clipboard changes
+  useEffect(() => {
+    if (lastEvent && lastEvent.type === 'clipboard:text') {
+      setSyncStatus('synced');
+    }
+  }, [lastEvent]);
 
   // Update UI with current clipboard state
   useEffect(() => {
@@ -102,13 +114,16 @@ export default function ClipboardPage() {
       <Card className="p-6 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold">Current Clipboard</h2>
-          <div className="flex gap-2">
-            <Button onClick={handleManualPaste} variant="outline">
-              Read Clipboard
-            </Button>
-            <Button onClick={handleCopy} disabled={!clipboardText}>
-              Copy to Clipboard
-            </Button>
+          <div className="flex items-center gap-3">
+            <SyncIndicator status={syncStatus} />
+            <div className="flex gap-2">
+              <Button onClick={handleManualPaste} variant="outline">
+                Read Clipboard
+              </Button>
+              <Button onClick={handleCopy} disabled={!clipboardText}>
+                Copy to Clipboard
+              </Button>
+            </div>
           </div>
         </div>
 

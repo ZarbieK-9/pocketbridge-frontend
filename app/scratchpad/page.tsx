@@ -29,6 +29,8 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { Save } from 'lucide-react';
 import { config } from '@/lib/config';
 import { analytics } from '@/lib/utils/analytics';
+import { SyncIndicator } from '@/components/sync-indicator';
+import { toast } from '@/components/ui/toast';
 
 const WS_URL = config.wsUrl;
 
@@ -44,6 +46,7 @@ export default function ScratchpadPage() {
   const [text, setText] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'sending' | 'synced' | 'error'>('idle');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
 
@@ -73,10 +76,13 @@ export default function ScratchpadPage() {
       if (sessionKeys) {
         unsubscribe = await onYjsUpdate(async (update) => {
           try {
+            setSyncStatus('sending');
             await sendYjsUpdate(update);
             setLastSaved(new Date());
+            setSyncStatus('synced');
           } catch (error) {
             console.error('[Scratchpad] Failed to send Yjs update:', error);
+            setSyncStatus('error');
           }
         });
         unsubscribeRef.current = unsubscribe;
@@ -136,10 +142,12 @@ export default function ScratchpadPage() {
       if (update) {
         // Apply update to Yjs document
         await applyYjsUpdate(update);
+        setSyncStatus('synced');
         // Text will update via Yjs observer
       }
     } catch (error) {
       console.error('[Scratchpad] Failed to apply update:', error);
+      setSyncStatus('error');
     }
   }
 
@@ -163,7 +171,8 @@ export default function ScratchpadPage() {
     <div className="container mx-auto p-6 space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Live Scratchpad</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <SyncIndicator status={syncStatus} />
           <StatusBadge status={isConnected ? 'online' : 'offline'} />
           {lastSaved && (
             <span className="text-sm text-muted-foreground flex items-center gap-1">

@@ -127,10 +127,17 @@ export async function updateUserProfile(
   updates: Partial<Omit<UserProfile, 'userId' | 'createdAt' | 'lastSeen'>>,
   userId: string
 ): Promise<void> {
-  const existing = loadUserProfile();
-  if (!existing) {
-    console.warn('[UserProfile] Cannot update: no existing profile');
-    return;
+  // Ensure profile exists before updating
+  let existing = loadUserProfile();
+  if (!existing || existing.userId !== userId) {
+    // Create profile if it doesn't exist
+    existing = {
+      userId,
+      createdAt: Date.now(),
+      lastSeen: Date.now(),
+      onboardingCompleted: false,
+    };
+    saveUserProfile(existing);
   }
   
   // Filter out lastSeen - it's not a valid update field (updated automatically on server)
@@ -181,13 +188,22 @@ export function hasCompletedOnboarding(userId: string): boolean {
  * SECURITY: Requires signature verification on server
  */
 export async function completeOnboarding(userId: string): Promise<void> {
-  // Update local storage
-  const existing = loadUserProfile();
-  if (existing) {
-    existing.onboardingCompleted = true;
-    existing.lastSeen = Date.now();
-    saveUserProfile(existing);
+  // Ensure profile exists before marking as complete
+  let existing = loadUserProfile();
+  if (!existing || existing.userId !== userId) {
+    // Create profile if it doesn't exist
+    existing = {
+      userId,
+      createdAt: Date.now(),
+      lastSeen: Date.now(),
+      onboardingCompleted: false,
+    };
   }
+  
+  // Update local storage
+  existing.onboardingCompleted = true;
+  existing.lastSeen = Date.now();
+  saveUserProfile(existing);
 
   // Sync to server with signature verification (non-blocking)
   try {
@@ -196,6 +212,7 @@ export async function completeOnboarding(userId: string): Promise<void> {
   } catch (error) {
     logger.error('Failed to sync onboarding completion to server', error);
     // Non-blocking: local update still succeeds
+    throw error; // Re-throw so caller knows server sync failed
   }
 }
 

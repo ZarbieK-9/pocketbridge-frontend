@@ -31,6 +31,8 @@ import { config } from '@/lib/config';
 import { logger } from '@/lib/utils/logger';
 import { ValidationError } from '@/lib/utils/errors';
 import { analytics } from '@/lib/utils/analytics';
+import { SyncIndicator } from '@/components/sync-indicator';
+import { toast } from '@/components/ui/toast';
 
 const WS_URL = config.wsUrl;
 
@@ -55,6 +57,7 @@ export default function MessagesPage() {
   const [selectedTTL, setSelectedTTL] = useState('300');
   const [messages, setMessages] = useState<Array<{ eventId: string; text: string; expiresAt: number }>>([]);
   const [isSending, setIsSending] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'sending' | 'synced' | 'error'>('idle');
 
   // Track page view
   useEffect(() => {
@@ -75,6 +78,8 @@ export default function MessagesPage() {
   useEffect(() => {
     if (lastEvent && lastEvent.type === 'message:self_destruct' && sessionKeys) {
       loadMessages();
+      setSyncStatus('synced');
+      toast('New message received', 'success');
     }
   }, [lastEvent, sessionKeys]);
 
@@ -102,6 +107,7 @@ export default function MessagesPage() {
     }
 
     setIsSending(true);
+    setSyncStatus('sending');
     try {
       // Validate and sanitize input
       const sanitizedText = validateMessageText(messageText);
@@ -110,6 +116,8 @@ export default function MessagesPage() {
       await sendSelfDestructMessage(sanitizedText, ttlSeconds);
       setMessageText('');
       await loadMessages();
+      setSyncStatus('synced');
+      toast('Message sent to all devices', 'success');
       logger.info('Message sent successfully', { ttl: ttlSeconds });
       analytics.feature('messages', 'send', { ttl: ttlSeconds });
     } catch (error) {
@@ -148,7 +156,10 @@ export default function MessagesPage() {
     <div className="container mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Self-Destruct Messages</h1>
-        <StatusBadge status={isConnected ? 'online' : 'offline'} />
+        <div className="flex items-center gap-3">
+          <SyncIndicator status={syncStatus} />
+          <StatusBadge status={isConnected ? 'online' : 'offline'} />
+        </div>
       </div>
 
       {/* Send Message */}

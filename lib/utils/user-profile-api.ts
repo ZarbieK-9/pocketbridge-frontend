@@ -59,7 +59,9 @@ export async function fetchUserProfile(userId: string): Promise<ServerUserProfil
     }
 
     const data = await response.json();
-    return data as ServerUserProfile;
+    // Backend returns { profile: {...} } or just the profile object
+    const profile = (data.profile || data) as ServerUserProfile;
+    return profile;
   } catch (error) {
     logger.error('Failed to fetch user profile', error);
     return null;
