@@ -79,9 +79,6 @@ export async function updateUserProfileOnServer(
       throw new Error('Identity keypair not found. Initialize crypto first.');
     }
 
-    // Generate timestamp
-    const timestamp = Date.now();
-
     // Convert camelCase to snake_case for server
     const serverUpdates: Record<string, any> = {};
     if (updates.displayName !== undefined) {
@@ -93,6 +90,9 @@ export async function updateUserProfileOnServer(
     if (updates.preferences !== undefined) {
       serverUpdates.preferences = updates.preferences;
     }
+
+    // Generate timestamp right before creating signature (to minimize time gap)
+    const timestamp = Date.now();
 
     // Create signature data: SHA256(user_id || timestamp || JSON.stringify(updates))
     const signatureDataHex = await hashForSignature(
@@ -107,6 +107,7 @@ export async function updateUserProfileOnServer(
       ? signature 
       : Array.from(signature).map(b => b.toString(16).padStart(2, '0')).join('');
 
+    // Send request immediately after generating signature (timestamp is still fresh)
     const apiUrl = getBackendApiUrl();
     const response = await fetch(`${apiUrl}/api/user/profile`, {
       method: 'POST',
@@ -144,7 +145,7 @@ export async function markOnboardingCompleteOnServer(userId: string): Promise<bo
       throw new Error('Identity keypair not found. Initialize crypto first.');
     }
 
-    // Generate timestamp
+    // Generate timestamp right before creating signature
     const timestamp = Date.now();
 
     // Create signature data: SHA256(user_id || timestamp || "onboarding_complete")
@@ -160,6 +161,7 @@ export async function markOnboardingCompleteOnServer(userId: string): Promise<bo
       ? signature 
       : Array.from(signature).map(b => b.toString(16).padStart(2, '0')).join('');
 
+    // Send request immediately after generating signature
     const apiUrl = getBackendApiUrl();
     const response = await fetch(`${apiUrl}/api/user/profile/onboarding-complete`, {
       method: 'POST',

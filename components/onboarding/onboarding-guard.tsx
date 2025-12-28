@@ -18,26 +18,31 @@ interface OnboardingGuardProps {
 }
 
 export function OnboardingGuard({ children }: OnboardingGuardProps) {
+  // All hooks must be called unconditionally and in the same order
+  const [isMounted, setIsMounted] = useState(false);
   const router = useRouter();
   const pathname = usePathname();
-  const { identityKeyPair, isInitialized } = useCrypto();
+  const cryptoState = useCrypto(); // Always call useCrypto, even if we don't use it during SSR
   const [isChecking, setIsChecking] = useState(true);
   const [hasRedirected, setHasRedirected] = useState(false);
-  const [isMounted, setIsMounted] = useState(false);
 
   // Routes that don't require onboarding
   const publicRoutes = ['/onboarding', '/pair'];
 
-  // Ensure component only runs on client
+  // Ensure component only runs on client (prevents hydration mismatch)
   useEffect(() => {
-    setIsMounted(true);
+    if (typeof window !== 'undefined') {
+      setIsMounted(true);
+    }
   }, []);
 
   useEffect(() => {
-    // Don't run on server
-    if (!isMounted) {
+    // Don't run on server or before mount
+    if (!isMounted || typeof window === 'undefined') {
       return;
     }
+
+    const { identityKeyPair, isInitialized } = cryptoState;
     // Don't check on public routes
     if (publicRoutes.includes(pathname)) {
       setIsChecking(false);
@@ -75,10 +80,10 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
     }
 
     setIsChecking(false);
-  }, [isInitialized, identityKeyPair, pathname, router, hasRedirected, isMounted]);
+  }, [cryptoState, pathname, router, hasRedirected, isMounted]);
 
-  // Don't render anything until mounted (prevents hydration mismatch)
-  if (!isMounted) {
+  // During SSR or before mount, always render children (prevents hydration mismatch)
+  if (!isMounted || typeof window === 'undefined') {
     return <>{children}</>;
   }
 

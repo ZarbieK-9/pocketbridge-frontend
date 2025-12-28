@@ -7,7 +7,7 @@
  * Runs on app initialization
  */
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useCrypto } from '@/hooks/use-crypto';
 import { loadUserProfile, getOrCreateUserProfile, updateUserProfile } from '@/lib/utils/user-profile';
 import { getOrCreateDeviceName, updateDeviceName } from '@/lib/utils/device';
@@ -15,8 +15,21 @@ import { logger } from '@/lib/utils/logger';
 
 export function UserProfileRestore() {
   const { identityKeyPair, isInitialized } = useCrypto();
+  const [isMounted, setIsMounted] = useState(false);
+
+  // Ensure component only runs on client
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setIsMounted(true);
+    }
+  }, []);
 
   useEffect(() => {
+    // Don't run on server or before mount
+    if (!isMounted || typeof window === 'undefined') {
+      return;
+    }
+
     if (!isInitialized || !identityKeyPair) {
       return;
     }
@@ -38,7 +51,7 @@ export function UserProfileRestore() {
     }).catch((error) => {
       logger.error('Failed to restore user profile', error);
     });
-  }, [isInitialized, identityKeyPair]);
+  }, [isInitialized, identityKeyPair, isMounted]);
 
   return null; // This component doesn't render anything
 }
