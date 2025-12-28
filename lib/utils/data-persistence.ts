@@ -21,13 +21,12 @@ interface BackupData {
 export async function exportData(): Promise<string> {
   try {
     const { getAllEvents, getDevices, getStreams } = await import('@/lib/sync/db');
-    const { getAllDevices } = await import('@/lib/utils/device');
 
     // Get all events
     const events = await getAllEvents();
 
     // Get all devices
-    const devices = await getAllDevices();
+    const devices = await getDevices();
     
     // Get all streams
     const streams = await getStreams();
@@ -91,7 +90,7 @@ export async function importData(backupJson: string): Promise<void> {
       try {
         await storeEvent(event as EncryptedEvent);
       } catch (error) {
-        logger.warn('Failed to import event', error);
+        logger.warn('Failed to import event', { error: error instanceof Error ? error.message : String(error) });
       }
     }
     
@@ -101,7 +100,7 @@ export async function importData(backupJson: string): Promise<void> {
       try {
         await upsertStream(stream as any);
       } catch (error) {
-        logger.warn('Failed to import stream', error);
+        logger.warn('Failed to import stream', { error: error instanceof Error ? error.message : String(error) });
       }
     }
 
@@ -112,7 +111,7 @@ export async function importData(backupJson: string): Promise<void> {
         // TODO: Implement device import
         logger.debug('Device import', { device });
       } catch (error) {
-        logger.warn('Failed to import device', error);
+        logger.warn('Failed to import device', { error: error instanceof Error ? error.message : String(error) });
       }
     }
 
@@ -150,8 +149,8 @@ export async function checkDataIntegrity(): Promise<{
 
     // Check devices
     try {
-      const { getAllDevices } = await import('@/lib/utils/device');
-      const devices = await getAllDevices();
+      const { getDevices } = await import('@/lib/sync/db');
+      const devices = await getDevices();
       if (!Array.isArray(devices)) {
         issues.push('Devices data is not an array');
       }

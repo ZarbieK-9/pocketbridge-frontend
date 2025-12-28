@@ -19,12 +19,17 @@ import {
   reassembleFile,
 } from '@/lib/features/files';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
+import { checkRateLimit } from '@/lib/utils/rate-limit';
+import { validateFile } from '@/lib/utils/validation';
+import { ValidationError } from '@/lib/utils/errors';
+import { logger } from '@/lib/utils/logger';
 import { MAX_FILE_SIZE, FILE_CHUNK_SIZE, FILE_PARALLEL_CHUNKS } from '@/lib/constants';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { Upload, FileIcon, Clock, Download } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
+import { config } from '@/lib/config';
 
 const WS_URL = config.wsUrl;
 

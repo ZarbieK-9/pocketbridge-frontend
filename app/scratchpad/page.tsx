@@ -29,7 +29,6 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { Save } from 'lucide-react';
 import { config } from '@/lib/config';
 import { analytics } from '@/lib/utils/analytics';
-import { useEffect } from 'react';
 
 const WS_URL = config.wsUrl;
 
