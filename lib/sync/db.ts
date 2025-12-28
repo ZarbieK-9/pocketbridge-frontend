@@ -97,8 +97,12 @@ export async function addEvent(event: EncryptedEvent): Promise<void> {
 
 /**
  * Get all events for a specific stream
+ * Optionally filter by user_id to only get events from the current user
  */
-export async function getEventsByStream(streamId: string): Promise<EncryptedEvent[]> {
+export async function getEventsByStream(
+  streamId: string,
+  userId?: string
+): Promise<EncryptedEvent[]> {
   const db = await getDatabase();
 
   return new Promise((resolve, reject) => {
@@ -108,7 +112,13 @@ export async function getEventsByStream(streamId: string): Promise<EncryptedEven
     const request = index.getAll(streamId);
 
     request.onsuccess = () => {
-      const events = request.result as EncryptedEvent[];
+      let events = request.result as EncryptedEvent[];
+      
+      // Filter by user_id if provided (to avoid decryption errors from other users' events)
+      if (userId) {
+        events = events.filter(event => event.user_id === userId);
+      }
+      
       // Sort by stream_seq
       events.sort((a, b) => a.stream_seq - b.stream_seq);
       resolve(events);

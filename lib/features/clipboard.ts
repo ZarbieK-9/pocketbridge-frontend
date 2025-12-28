@@ -12,6 +12,7 @@ import { decryptPayload } from '@/lib/crypto/encryption';
 import { getEventsByStream } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
+import { loadIdentityKeyPair } from '@/lib/crypto/keys';
 import type { EncryptedEvent, ClipboardTextPayload } from '@/types';
 
 const CLIPBOARD_STREAM_ID = 'clipboard:main';
@@ -44,6 +45,22 @@ export async function receiveClipboardText(
   event: EncryptedEvent,
 ): Promise<string | null> {
   try {
+    // Validate event belongs to current user before attempting decryption
+    const identityKeyPair = await loadIdentityKeyPair();
+    if (!identityKeyPair) {
+      console.error('[Clipboard] Identity keypair not available');
+      return null;
+    }
+
+    // Check if event user_id matches current user's public key
+    if (event.user_id !== identityKeyPair.publicKeyHex) {
+      console.warn('[Clipboard] Event user_id does not match current user, skipping decryption', {
+        eventUserId: event.user_id?.substring(0, 16) + '...',
+        currentUserId: identityKeyPair.publicKeyHex?.substring(0, 16) + '...',
+      });
+      return null;
+    }
+
     const sharedKey = await getSharedEncryptionKey();
     if (!sharedKey) {
       console.error('[Clipboard] Shared encryption key not available');
@@ -57,7 +74,16 @@ export async function receiveClipboardText(
 
     return payload.text;
   } catch (error) {
-    console.error('[Clipboard] Failed to decrypt clipboard event:', error);
+    // Check if it's a decryption error (invalid key)
+    if (error instanceof Error && error.message.includes('invalid key')) {
+      console.warn('[Clipboard] Decryption failed - event may be from different identity keypair or corrupted', {
+        eventId: event.event_id,
+        userId: event.user_id?.substring(0, 16) + '...',
+        deviceId: event.device_id,
+      });
+    } else {
+      console.error('[Clipboard] Failed to decrypt clipboard event:', error);
+    }
     return null;
   }
 }
@@ -67,7 +93,15 @@ export async function receiveClipboardText(
  */
 export async function getLatestClipboardText(): Promise<string | null> {
   try {
-    const events = await getEventsByStream(CLIPBOARD_STREAM_ID);
+    // Get current user's identity keypair to filter events
+    const identityKeyPair = await loadIdentityKeyPair();
+    if (!identityKeyPair) {
+      console.error('[Clipboard] Identity keypair not available');
+      return null;
+    }
+
+    // Only get events from current user to avoid decryption errors
+    const events = await getEventsByStream(CLIPBOARD_STREAM_ID, identityKeyPair.publicKeyHex);
     
     if (events.length === 0) {
       return null;
