@@ -24,6 +24,11 @@ export function useCrypto() {
   });
 
   useEffect(() => {
+    // Don't initialize on server
+    if (typeof window === 'undefined') {
+      return;
+    }
+
     let mounted = true;
     let isInitializing = false;
 

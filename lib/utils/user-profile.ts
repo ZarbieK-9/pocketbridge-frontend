@@ -124,7 +124,7 @@ export async function getOrCreateUserProfile(identityKeyPair: Ed25519KeyPair): P
  * Local storage is updated immediately, server sync happens in background.
  */
 export async function updateUserProfile(
-  updates: Partial<Omit<UserProfile, 'userId' | 'createdAt'>>,
+  updates: Partial<Omit<UserProfile, 'userId' | 'createdAt' | 'lastSeen'>>,
   userId: string
 ): Promise<void> {
   const existing = loadUserProfile();
@@ -133,10 +133,25 @@ export async function updateUserProfile(
     return;
   }
   
+  // Filter out lastSeen - it's not a valid update field (updated automatically on server)
+  const validUpdates = { ...updates };
+  delete (validUpdates as any).lastSeen;
+  
+  // If no valid updates after filtering, skip server sync
+  if (Object.keys(validUpdates).length === 0) {
+    // Only update lastSeen locally
+    const updated: UserProfile = {
+      ...existing,
+      lastSeen: Date.now(),
+    };
+    saveUserProfile(updated);
+    return;
+  }
+  
   // Update local storage immediately
   const updated: UserProfile = {
     ...existing,
-    ...updates,
+    ...validUpdates,
     lastSeen: Date.now(),
   };
   
@@ -144,7 +159,7 @@ export async function updateUserProfile(
 
   // Sync to server with signature verification (non-blocking)
   try {
-    await updateUserProfileOnServer(updates, userId);
+    await updateUserProfileOnServer(validUpdates, userId);
     logger.info('User profile synced to server', { userId: userId.substring(0, 16) + '...' });
   } catch (error) {
     logger.error('Failed to sync profile to server', error);

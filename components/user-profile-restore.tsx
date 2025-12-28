@@ -43,10 +43,8 @@ export function UserProfileRestore() {
           onboardingCompleted: profile.onboardingCompleted,
         });
 
-        // Update last seen (non-blocking)
-        updateUserProfile({ lastSeen: Date.now() }, identityKeyPair.publicKeyHex).catch((error) => {
-          logger.error('Failed to update last seen', error);
-        });
+        // Note: lastSeen is updated automatically on the server when fetching profile
+        // No need to send a separate update for lastSeen
       }
     }).catch((error) => {
       logger.error('Failed to restore user profile', error);
