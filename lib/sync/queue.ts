@@ -211,7 +211,18 @@ export class EventQueue {
    */
   reset(): void {
     this.lastAckDeviceSeq = 0;
+    this.deviceSeq = 0;
     this.saveLastAckDeviceSeq();
+    this.saveDeviceSeq();
+  }
+
+  /**
+   * Clear all events from the queue (for full resync)
+   */
+  async clear(): Promise<void> {
+    const { clearDatabase } = await import('./db');
+    await clearDatabase();
+    this.reset();
   }
 }
 

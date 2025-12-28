@@ -13,6 +13,11 @@ import { setWsUrl, getWsUrl } from '@/lib/utils/storage';
 import { getOrCreateDeviceId, getOrCreateDeviceName, updateDeviceName } from '@/lib/utils/device';
 import { useRouter } from 'next/navigation';
 import { useCrypto } from '@/hooks/use-crypto';
+import { validatePairingCode, validateDeviceName } from '@/lib/utils/validation';
+import { checkRateLimit } from '@/lib/utils/rate-limit';
+import { config } from '@/lib/config';
+import { logger } from '@/lib/utils/logger';
+import { ValidationError } from '@/lib/utils/errors';
 
 type PairMode = 'receive' | 'share';
 
@@ -41,7 +46,7 @@ export default function PairPage() {
     setDeviceName(currentDeviceName);
     setNewDeviceName(currentDeviceName); // Initialize with current device name
     setDeviceName(getOrCreateDeviceName());
-    setWsUrlState(getWsUrl() || process.env.NEXT_PUBLIC_WS_URL || 'wss://backend-production-7f7ab.up.railway.app/ws');
+    setWsUrlState(getWsUrl() || process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws');
   }, []);
 
   const handleCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -66,8 +71,20 @@ export default function PairPage() {
       
       const generateMyPairingCode = async () => {
         try {
-          const currentWsUrl = wsUrl || getWsUrl() || process.env.NEXT_PUBLIC_WS_URL || 'wss://backend-production-7f7ab.up.railway.app/ws';
+          // Rate limiting for pairing code generation
           const deviceId = getOrCreateDeviceId();
+          const rateLimit = checkRateLimit(`pairing:${deviceId}`, 'pairingCode');
+          if (!rateLimit.allowed) {
+            const resetIn = Math.ceil((rateLimit.resetAt - Date.now()) / 1000 / 60);
+            setResult({
+              success: false,
+              message: `Rate limit exceeded. Please wait ${resetIn} minutes before generating a new pairing code.`,
+            });
+            generatingRef.current = false;
+            return;
+          }
+
+          const currentWsUrl = wsUrl || getWsUrl() || config.wsUrl;
           const currentDeviceName = deviceName || getOrCreateDeviceName();
 
           const data: PairingData = {
@@ -88,8 +105,9 @@ export default function PairPage() {
             const expires = expiresAt.getTime();
             const remaining = Math.max(0, Math.floor((expires - now) / 1000));
             setTimeRemaining(remaining);
+            logger.info('Pairing code generated', { expiresAt });
           } catch (error) {
-            console.error('[PairPage] Failed to generate pairing code:', error);
+            logger.error('Failed to generate pairing code', error);
             setResult({
               success: false,
               message: `Failed to generate pairing code: ${error instanceof Error ? error.message : String(error)}`,
@@ -121,7 +139,7 @@ export default function PairPage() {
           });
           setMyQrCode(qrDataUrl);
         } catch (error) {
-          console.error('Failed to generate pairing code:', error);
+          logger.error('Failed to generate QR code', error);
           generatingRef.current = false; // Allow retry on error
         }
       };
@@ -143,7 +161,7 @@ export default function PairPage() {
       
       // Auto-rotate code when expired
       if (remaining === 0 && mode === 'share' && isInitialized && identityKeyPair && isMounted) {
-        console.log('[PairPage] Pairing code expired, generating new one...');
+        logger.info('Pairing code expired, generating new one');
         generatingRef.current = false; // Allow regeneration
         // Trigger regeneration by clearing state
         setMyPairingCode(null);
@@ -157,18 +175,14 @@ export default function PairPage() {
   }, [codeExpiresAt, timeRemaining, mode, isInitialized, identityKeyPair, isMounted]);
 
   const handlePair = async () => {
-    if (pairingCode.length !== 6) {
-      setResult({
-        success: false,
-        message: 'Please enter a 6-digit pairing code',
-      });
-      return;
-    }
-
     setResult(null); // Clear previous result
+    
     try {
-      console.log('[PairPage] Attempting to pair with code:', pairingCode);
-      const data = await parsePairingCode(pairingCode);
+      // Validate pairing code
+      const validatedCode = validatePairingCode(pairingCode);
+      
+      logger.info('Attempting to pair with code', { codeLength: validatedCode.length });
+      const data = await parsePairingCode(validatedCode);
       
       if (!data) {
         setResult({
@@ -180,10 +194,17 @@ export default function PairPage() {
 
       setPairingData(data);
       setWsUrl(data.wsUrl); // Save to localStorage
-      // Save device name if changed
+      
+      // Validate and save device name if changed
       if (newDeviceName && newDeviceName !== deviceName) {
-        updateDeviceName(newDeviceName);
-        setDeviceName(newDeviceName);
+        try {
+          const validatedName = validateDeviceName(newDeviceName);
+          updateDeviceName(validatedName);
+          setDeviceName(validatedName);
+        } catch (error) {
+          logger.warn('Invalid device name, using existing', { error });
+          // Continue with existing device name
+        }
       }
       
       setWsUrlState(data.wsUrl); // Update state
@@ -193,16 +214,25 @@ export default function PairPage() {
         message: `Successfully paired with ${data.deviceName || 'device'}. Identity keypair imported.`,
       });
 
+      logger.info('Device paired successfully', { deviceName: data.deviceName });
+
       // Redirect to home after 2 seconds
       setTimeout(() => {
         router.push('/');
       }, 2000);
     } catch (error) {
-      console.error('[PairPage] Failed to parse pairing code:', error);
-      setResult({
-        success: false,
-        message: `Failed to pair: ${error instanceof Error ? error.message : String(error)}`,
-      });
+      logger.error('Failed to parse pairing code', error);
+      if (error instanceof ValidationError) {
+        setResult({
+          success: false,
+          message: error.message,
+        });
+      } else {
+        setResult({
+          success: false,
+          message: `Failed to pair: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
     }
   };
 
@@ -214,14 +244,16 @@ export default function PairPage() {
     }
   };
 
-  // Debug: Log crypto state
+  // Debug: Log crypto state (development only)
   useEffect(() => {
-    console.log('[PairPage] Crypto state:', {
-      isInitialized,
-      hasIdentityKeyPair: !!identityKeyPair,
-      hasError: !!cryptoError,
-      errorMessage: cryptoError?.message,
-    });
+    if (process.env.NODE_ENV === 'development') {
+      logger.debug('Crypto state', {
+        isInitialized,
+        hasIdentityKeyPair: !!identityKeyPair,
+        hasError: !!cryptoError,
+        errorMessage: cryptoError?.message,
+      });
+    }
   }, [isInitialized, identityKeyPair, cryptoError]);
 
   if (!isInitialized) {

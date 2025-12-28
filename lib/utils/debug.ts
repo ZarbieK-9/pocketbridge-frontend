@@ -27,7 +27,7 @@ export function getCurrentWebSocketUrl(): string {
   }
 
   // Fallback default
-  return 'default: wss://backend-production-7f7ab.up.railway.app/ws';
+  return 'default: ws://localhost:3001/ws';
 }
 
 /**

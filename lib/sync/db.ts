@@ -213,6 +213,45 @@ export async function getStreams(): Promise<Stream[]> {
 }
 
 /**
+ * Get all events (for backup/export)
+ */
+export async function getAllEvents(): Promise<EncryptedEvent[]> {
+  const db = await getDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_EVENTS], 'readonly');
+    const store = transaction.objectStore(STORE_EVENTS);
+    const request = store.getAll();
+
+    request.onsuccess = () => resolve(request.result as EncryptedEvent[]);
+    request.onerror = () => reject(new Error('Failed to get all events'));
+  });
+}
+
+/**
+ * Store event (for import/restore)
+ */
+export async function storeEvent(event: EncryptedEvent): Promise<void> {
+  return addEvent(event); // addEvent already handles idempotency
+}
+
+/**
+ * Delete event by ID
+ */
+export async function deleteEvent(eventId: string): Promise<void> {
+  const db = await getDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_EVENTS], 'readwrite');
+    const store = transaction.objectStore(STORE_EVENTS);
+    const request = store.delete(eventId);
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(new Error('Failed to delete event'));
+  });
+}
+
+/**
  * Clear all data (for testing or reset)
  */
 export async function clearDatabase(): Promise<void> {

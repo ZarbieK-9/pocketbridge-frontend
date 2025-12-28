@@ -8,7 +8,10 @@ const WS_QUEUE_KEY = 'ws_event_queue';
 
 // Install event - cache essential resources
 self.addEventListener('install', (event) => {
-  console.log('[SW] Service Worker installing');
+  // Only log in development
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[SW] Service Worker installing');
+  }
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       return cache.addAll([
@@ -79,9 +82,9 @@ self.addEventListener('fetch', (event) => {
         }
         return fetchResponse;
       }).catch(() => {
-        // If offline and not in cache, return a basic offline page
+        // If offline and not in cache, return offline page
         if (event.request.destination === 'document') {
-          return caches.match('/');
+          return caches.match('/offline.html') || caches.match('/');
         }
       });
     })

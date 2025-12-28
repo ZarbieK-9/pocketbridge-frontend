@@ -14,7 +14,7 @@ import { useCrypto } from "@/hooks/use-crypto"
 
 export default function DashboardPage() {
   const { identityKeyPair } = useCrypto();
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://backend-production-7f7ab.up.railway.app';
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
   return (
     <MainLayout>
@@ -28,21 +28,29 @@ export default function DashboardPage() {
             <CardDescription>Common tasks across your devices</CardDescription>
           </CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent">
-              <Clipboard className="h-6 w-6 text-primary" />
-              <span>Copy to Clipboard</span>
+            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent" asChild>
+              <a href="/clipboard" aria-label="Copy to Clipboard">
+                <Clipboard className="h-6 w-6 text-primary" aria-hidden="true" />
+                <span>Copy to Clipboard</span>
+              </a>
             </Button>
-            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent">
-              <FileText className="h-6 w-6 text-primary" />
-              <span>Open Scratchpad</span>
+            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent" asChild>
+              <a href="/scratchpad" aria-label="Open Scratchpad">
+                <FileText className="h-6 w-6 text-primary" aria-hidden="true" />
+                <span>Open Scratchpad</span>
+              </a>
             </Button>
-            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent">
-              <MessageSquare className="h-6 w-6 text-primary" />
-              <span>Send Message</span>
+            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent" asChild>
+              <a href="/messages" aria-label="Send Message">
+                <MessageSquare className="h-6 w-6 text-primary" aria-hidden="true" />
+                <span>Send Message</span>
+              </a>
             </Button>
-            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent">
-              <FolderOpen className="h-6 w-6 text-primary" />
-              <span>Share File</span>
+            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent" asChild>
+              <a href="/files" aria-label="Share File">
+                <FolderOpen className="h-6 w-6 text-primary" aria-hidden="true" />
+                <span>Share File</span>
+              </a>
             </Button>
           </CardContent>
         </Card>

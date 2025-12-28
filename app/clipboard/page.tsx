@@ -20,7 +20,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { StatusBadge } from '@/components/ui/status-badge';
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'wss://backend-production-7f7ab.up.railway.app/ws';
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
 
 export default function ClipboardPage() {
   const deviceId = getOrCreateDeviceId();

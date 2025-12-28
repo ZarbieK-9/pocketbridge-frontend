@@ -136,6 +136,8 @@ export interface WSMessage {
     | 'ack'
     | 'replay_request'
     | 'replay_response'
+    | 'session_expiring_soon'
+    | 'full_resync_required'
     | 'error';
   payload: unknown;
 }
@@ -173,11 +175,37 @@ export interface SessionEstablished {
 export interface ReplayRequest {
   type: 'replay_request';
   last_ack_device_seq: number;
+  limit?: number; // Number of events per page (default: 100, max: 1000)
+  continuation_token?: string; // Token for pagination (base64 encoded last device_seq)
 }
 
 export interface ReplayResponse {
   type: 'replay_response';
   events: EncryptedEvent[];
+  has_more: boolean; // Whether more events are available
+  continuation_token?: string; // Token to request next page (if has_more is true)
+  total_events?: number; // Total number of events available (only on first page)
+  page_size: number; // Number of events in this response
+}
+
+/**
+ * Session expiration warning
+ */
+export interface SessionExpiringWarning {
+  type: 'session_expiring_soon';
+  expires_in_seconds: number;
+  expires_at: number; // Unix timestamp
+}
+
+/**
+ * Full resync required message
+ */
+export interface FullResyncRequired {
+  type: 'full_resync_required';
+  reason: 'too_many_events' | 'session_too_old';
+  event_count: number;
+  last_ack_device_seq: number;
+  recommendation: string;
 }
 
 // Connection status

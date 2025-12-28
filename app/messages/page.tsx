@@ -25,8 +25,14 @@ import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { Send, Clock, Trash2 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
+import { validateMessageText, validateTTL } from '@/lib/utils/validation';
+import { checkRateLimit } from '@/lib/utils/rate-limit';
+import { config } from '@/lib/config';
+import { logger } from '@/lib/utils/logger';
+import { ValidationError } from '@/lib/utils/errors';
+import { analytics } from '@/lib/utils/analytics';
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'wss://backend-production-7f7ab.up.railway.app/ws';
+const WS_URL = config.wsUrl;
 
 const TTL_OPTIONS = [
   { value: '30', label: '30 seconds' },
@@ -49,6 +55,11 @@ export default function MessagesPage() {
   const [selectedTTL, setSelectedTTL] = useState('300');
   const [messages, setMessages] = useState<Array<{ eventId: string; text: string; expiresAt: number }>>([]);
   const [isSending, setIsSending] = useState(false);
+
+  // Track page view
+  useEffect(() => {
+    analytics.page('Messages');
+  }, []);
 
   // Load messages on mount and when session keys available
   useEffect(() => {
@@ -74,22 +85,40 @@ export default function MessagesPage() {
       const activeMessages = await getActiveMessages();
       setMessages(activeMessages);
     } catch (error) {
-      console.error('[Messages] Failed to load messages:', error);
+      logger.error('Failed to load messages', error);
     }
   }
 
   async function handleSend() {
     if (!sessionKeys || !messageText.trim() || isSending) return;
 
+    // Rate limiting
+    const deviceId = getOrCreateDeviceId();
+    const rateLimit = checkRateLimit(`message:${deviceId}`, 'messageSend');
+    if (!rateLimit.allowed) {
+      const resetIn = Math.ceil((rateLimit.resetAt - Date.now()) / 1000);
+      alert(`Rate limit exceeded. Please wait ${resetIn} seconds before sending another message.`);
+      return;
+    }
+
     setIsSending(true);
     try {
-      const ttlSeconds = parseInt(selectedTTL, 10);
-      await sendSelfDestructMessage(messageText, ttlSeconds);
+      // Validate and sanitize input
+      const sanitizedText = validateMessageText(messageText);
+      const ttlSeconds = validateTTL(parseInt(selectedTTL, 10));
+
+      await sendSelfDestructMessage(sanitizedText, ttlSeconds);
       setMessageText('');
       await loadMessages();
+      logger.info('Message sent successfully', { ttl: ttlSeconds });
+      analytics.feature('messages', 'send', { ttl: ttlSeconds });
     } catch (error) {
-      console.error('[Messages] Failed to send:', error);
-      alert('Failed to send message. Please try again.');
+      logger.error('Failed to send message', error);
+      if (error instanceof ValidationError) {
+        alert(error.message);
+      } else {
+        alert('Failed to send message. Please try again.');
+      }
     } finally {
       setIsSending(false);
     }
@@ -99,8 +128,9 @@ export default function MessagesPage() {
     try {
       await deleteMessagePayload(eventId);
       await loadMessages();
+      logger.info('Message deleted', { eventId });
     } catch (error) {
-      console.error('[Messages] Failed to delete:', error);
+      logger.error('Failed to delete message', error);
     }
   }
 

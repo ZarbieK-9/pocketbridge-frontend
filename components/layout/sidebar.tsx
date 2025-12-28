@@ -22,7 +22,7 @@ function getWebSocketUrl(): string {
       return storedUrl;
     }
   }
-  return process.env.NEXT_PUBLIC_WS_URL || 'wss://backend-production-7f7ab.up.railway.app/ws';
+  return process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
 }
 
 function getBackendApiUrlFromWs(wsUrl: string): string {
@@ -34,7 +34,7 @@ function getBackendApiUrlFromWs(wsUrl: string): string {
     const basePath = u.pathname.replace(/\/?ws$/, '');
     return `${httpProtocol}//${u.host}${basePath}`;
   } catch {
-    return process.env.NEXT_PUBLIC_API_URL || 'https://backend-production-7f7ab.up.railway.app';
+    return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
   }
 }
 
@@ -156,6 +156,8 @@ export function Sidebar() {
               <Link
                 key={item.href}
                 href={item.href}
+                aria-label={item.label}
+                aria-current={isActive ? 'page' : undefined}
                 className={cn(
                   "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                   isActive
@@ -163,7 +165,7 @@ export function Sidebar() {
                     : "text-sidebar-foreground hover:bg-sidebar-accent/50",
                 )}
               >
-                <Icon className="h-5 w-5" />
+                <Icon className="h-5 w-5" aria-hidden="true" />
                 <span>{item.label}</span>
               </Link>
             )

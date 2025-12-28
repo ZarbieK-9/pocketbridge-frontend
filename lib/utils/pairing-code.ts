@@ -20,7 +20,7 @@ export interface PairingData {
  */
 function getBackendApiUrl(): string {
   if (typeof window === 'undefined') {
-    return process.env.NEXT_PUBLIC_API_URL || 'https://backend-production-7f7ab.up.railway.app';
+    return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
   }
   
   // First try explicit API URL env var
@@ -30,7 +30,7 @@ function getBackendApiUrl(): string {
   }
   
   // Try to get from storage utility or use default
-  const wsUrl = getWsUrl() || process.env.NEXT_PUBLIC_WS_URL || 'wss://backend-production-7f7ab.up.railway.app/ws';
+  const wsUrl = getWsUrl() || process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
   // Convert WebSocket URL to HTTP URL
   // Handle: ws://host:port/ws -> http://host:port
   // Handle: wss://host:port/ws -> https://host:port
@@ -40,7 +40,7 @@ function getBackendApiUrl(): string {
   // Remove trailing slash
   httpUrl = httpUrl.replace(/\/$/, '');
   
-  const apiUrl = httpUrl || 'https://backend-production-7f7ab.up.railway.app';
+  const apiUrl = httpUrl || 'http://localhost:3001';
   
   console.log('[Pairing] Backend API URL derived:', { 
     wsUrl, 

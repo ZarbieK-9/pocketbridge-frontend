@@ -100,6 +100,11 @@ export async function getActiveMessages(): Promise<Array<{ eventId: string; text
         continue;
       }
 
+      // Skip deleted messages (check for payload_deleted flag or empty payload)
+      if ((event as any).payload_deleted || !event.encrypted_payload || event.encrypted_payload === '') {
+        continue;
+      }
+
       const message = await receiveSelfDestructMessage(event);
       if (message) {
         activeMessages.push({
@@ -122,12 +127,50 @@ export async function getActiveMessages(): Promise<Array<{ eventId: string; text
  * Note: Event metadata remains, but payload is deleted
  */
 export async function deleteMessagePayload(eventId: string): Promise<void> {
-  // In a real implementation, you'd mark the payload as deleted in IndexedDB
-  // For Phase 1, we'll just log it
-  console.log(`[Messages] Deleting payload for event ${eventId}`);
-  
-  // TODO: Implement actual deletion in IndexedDB
-  // This would involve updating the event record to mark payload as deleted
+  try {
+    const { getDatabase } = await import('@/lib/sync/db');
+    const { STORE_EVENTS } = await import('@/lib/constants');
+    const db = await getDatabase();
+    
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_EVENTS], 'readwrite');
+      const store = transaction.objectStore(STORE_EVENTS);
+      const request = store.get(eventId);
+      
+      request.onsuccess = () => {
+        const event = request.result;
+        if (event) {
+          // Mark payload as deleted by setting encrypted_payload to empty
+          // Event metadata (event_id, device_seq, etc.) is preserved
+          const updatedEvent = {
+            ...event,
+            encrypted_payload: '', // Clear payload
+            payload_deleted: true, // Mark as deleted
+            deleted_at: Date.now(), // Timestamp deletion
+          };
+          
+          const updateRequest = store.put(updatedEvent);
+          updateRequest.onsuccess = () => {
+            console.log(`[Messages] Deleted payload for event ${eventId}`);
+            resolve();
+          };
+          updateRequest.onerror = () => {
+            reject(new Error('Failed to update event'));
+          };
+        } else {
+          console.warn(`[Messages] Event ${eventId} not found`);
+          resolve(); // Not an error if event doesn't exist
+        }
+      };
+      
+      request.onerror = () => {
+        reject(new Error('Failed to get event'));
+      };
+    });
+  } catch (error) {
+    console.error(`[Messages] Failed to delete payload for event ${eventId}:`, error);
+    throw error;
+  }
 }
 
 

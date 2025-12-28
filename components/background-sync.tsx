@@ -21,7 +21,7 @@ function getWebSocketUrl(): string {
       return storedUrl;
     }
   }
-  return process.env.NEXT_PUBLIC_WS_URL || 'wss://backend-production-7f7ab.up.railway.app/ws';
+  return process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
 }
 
 export function BackgroundSync() {

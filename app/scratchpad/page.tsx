@@ -27,8 +27,11 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { Save } from 'lucide-react';
+import { config } from '@/lib/config';
+import { analytics } from '@/lib/utils/analytics';
+import { useEffect } from 'react';
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'wss://backend-production-7f7ab.up.railway.app/ws';
+const WS_URL = config.wsUrl;
 
 export default function ScratchpadPage() {
   const deviceId = getOrCreateDeviceId();
@@ -44,6 +47,11 @@ export default function ScratchpadPage() {
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
+
+  // Track page view
+  useEffect(() => {
+    analytics.page('Scratchpad');
+  }, []);
 
   // Initialize Yjs document
   useEffect(() => {

@@ -26,7 +26,7 @@ import { StatusBadge } from '@/components/ui/status-badge';
 import { Upload, FileIcon, Clock, Download } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'wss://backend-production-7f7ab.up.railway.app/ws';
+const WS_URL = config.wsUrl;
 
 interface FileTransfer {
   fileId: string;
@@ -64,12 +64,22 @@ export default function FilesPage() {
     const file = e.target.files?.[0];
     if (!file || !sessionKeys) return;
 
-    if (file.size > MAX_FILE_SIZE) {
-      alert(`File too large. Maximum size: ${(MAX_FILE_SIZE / 1024 / 1024 / 1024).toFixed(1)}GB`);
+    // Rate limiting for file uploads
+    const rateLimit = checkRateLimit(`file:${deviceId}`, 'fileUpload');
+    if (!rateLimit.allowed) {
+      const resetIn = Math.ceil((rateLimit.resetAt - Date.now()) / 1000 / 60);
+      alert(`Rate limit exceeded. Please wait ${resetIn} minutes before uploading another file.`);
       return;
     }
 
     try {
+      // Validate file
+      validateFile(file);
+      
+      if (file.size > MAX_FILE_SIZE) {
+        throw new ValidationError(`File too large. Maximum size: ${(MAX_FILE_SIZE / 1024 / 1024 / 1024).toFixed(1)}GB`);
+      }
+
       const upload = await startFileUpload(file);
       
       const transfer: FileTransfer = {
@@ -92,8 +102,12 @@ export default function FilesPage() {
         );
       });
     } catch (error) {
-      console.error('[Files] Failed to upload:', error);
-      alert('Failed to upload file. Please try again.');
+      logger.error('Failed to upload file', error);
+      if (error instanceof ValidationError) {
+        alert(error.message);
+      } else {
+        alert('Failed to upload file. Please try again.');
+      }
     }
   }
 
@@ -107,7 +121,7 @@ export default function FilesPage() {
     let uploadedChunks = 0;
     const failedChunks: number[] = [];
 
-    console.log(`[Files] Uploading ${totalChunks} chunks in batches of ${PARALLEL_CHUNKS}...`);
+    logger.info('Uploading file chunks', { totalChunks, parallelChunks: PARALLEL_CHUNKS });
 
     // Upload chunks in parallel batches
     for (let batchStart = 0; batchStart < totalChunks; batchStart += PARALLEL_CHUNKS) {
@@ -130,10 +144,10 @@ export default function FilesPage() {
             
             // Log progress every 10%
             if (uploadedChunks % Math.max(1, Math.floor(totalChunks / 10)) === 0) {
-              console.log(`[Files] Progress: ${progress.toFixed(1)}% (${uploadedChunks}/${totalChunks} chunks)`);
+              logger.debug('Upload progress', { progress: progress.toFixed(1), uploadedChunks, totalChunks });
             }
           } catch (error) {
-            console.error(`[Files] Failed to upload chunk ${chunkIndex}:`, error);
+            logger.error('Failed to upload chunk', error, { chunkIndex });
             failedChunks.push(chunkIndex);
             throw error;
           }
@@ -148,7 +162,7 @@ export default function FilesPage() {
 
     // Retry failed chunks
     if (failedChunks.length > 0) {
-      console.log(`[Files] Retrying ${failedChunks.length} failed chunks...`);
+      logger.info('Retrying failed chunks', { failedCount: failedChunks.length });
       for (const chunkIndex of failedChunks) {
         try {
           const start = chunkIndex * FILE_CHUNK_SIZE;
@@ -158,13 +172,13 @@ export default function FilesPage() {
           uploadedChunks++;
           onProgress((uploadedChunks / totalChunks) * 100);
         } catch (error) {
-          console.error(`[Files] Failed to retry chunk ${chunkIndex}:`, error);
+          logger.error('Failed to retry chunk', error, { chunkIndex });
           throw new Error(`Failed to upload chunk ${chunkIndex} after retry`);
         }
       }
     }
 
-    console.log(`[Files] Upload complete: ${upload.name}`);
+    logger.info('Upload complete', { fileName: upload.name, fileSize: upload.size });
   }
 
   async function handleIncomingFileMetadata(event: any) {
@@ -193,7 +207,7 @@ export default function FilesPage() {
         setTransfers(prev => [...prev, transfer]);
       }
     } catch (error) {
-      console.error('[Files] Failed to handle incoming file metadata:', error);
+      logger.error('Failed to handle incoming file metadata', error);
     }
   }
 
@@ -206,20 +220,20 @@ export default function FilesPage() {
       // Decrypt payload to get file_id
       const sharedKey = await getSharedEncryptionKey();
       if (!sharedKey) {
-        console.error('[Files] Shared encryption key not available');
+        logger.error('Shared encryption key not available');
         return;
       }
       const payload = await decryptPayload(event.encrypted_payload, sharedKey) as any;
       const fileId = payload.file_id;
       
       if (!fileId) {
-        console.error('[Files] Received chunk without file_id');
+        logger.error('Received chunk without file_id');
         return;
       }
       
       const fileInfo = incomingFiles.get(fileId);
       if (!fileInfo) {
-        console.error('[Files] Received chunk for unknown file:', fileId);
+        logger.error('Received chunk for unknown file', undefined, { fileId });
         return;
       }
 
@@ -266,7 +280,7 @@ export default function FilesPage() {
         });
       }
     } catch (error) {
-      console.error('[Files] Failed to handle incoming file chunk:', error);
+      logger.error('Failed to handle incoming file chunk', error);
     }
   }
 
@@ -291,7 +305,7 @@ export default function FilesPage() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (error) {
-      console.error('[Files] Failed to reassemble file:', error);
+      logger.error('Failed to reassemble file', error);
     }
   }
 
@@ -331,6 +345,7 @@ export default function FilesPage() {
             onChange={handleFileSelect}
             className="hidden"
             disabled={!isConnected}
+            aria-label="Select file to upload"
           />
           <div
             onClick={() => fileInputRef.current?.click()}

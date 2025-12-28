@@ -4,6 +4,9 @@ import { Inter } from "next/font/google"
 import { Analytics } from "@vercel/analytics/next"
 import { ServiceWorkerRegister } from "@/components/service-worker-register"
 import { BackgroundSync } from "@/components/background-sync"
+import { ErrorBoundary } from "@/components/error-boundary"
+import { OfflineIndicator } from "@/components/offline-indicator"
+import { WebVitalsReporter } from "@/components/web-vitals-reporter"
 import "@/lib/utils/debug" // Enable browser console debugging
 import "./globals.css"
 
@@ -17,6 +20,37 @@ export const metadata: Metadata = {
   icons: {
     icon: "/icon-192.jpg",
     apple: "/icon-512.jpg",
+  },
+  openGraph: {
+    title: "PocketBridge - Secure Cross-Device Workspace",
+    description: "End-to-end encrypted clipboard sync, scratchpad, messaging, and file sharing across your devices",
+    type: "website",
+    siteName: "PocketBridge",
+    images: [
+      {
+        url: "/icon-512.jpg",
+        width: 512,
+        height: 512,
+        alt: "PocketBridge",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "PocketBridge - Secure Cross-Device Workspace",
+    description: "End-to-end encrypted clipboard sync, scratchpad, messaging, and file sharing across your devices",
+    images: ["/icon-512.jpg"],
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      'max-video-preview': -1,
+      'max-image-preview': 'large',
+      'max-snippet': -1,
+    },
   },
 }
 
@@ -35,11 +69,31 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              '@context': 'https://schema.org',
+              '@type': 'WebApplication',
+              name: 'PocketBridge',
+              description: 'End-to-end encrypted cross-device workspace',
+              url: typeof window !== 'undefined' ? window.location.origin : '',
+              applicationCategory: 'ProductivityApplication',
+              operatingSystem: 'Web',
+            }),
+          }}
+        />
+      </head>
       <body className={`${inter.className} font-sans antialiased`}>
-        <ServiceWorkerRegister />
-        <BackgroundSync />
-        {children}
-        <Analytics />
+        <ErrorBoundary>
+          <ServiceWorkerRegister />
+          <BackgroundSync />
+          <WebVitalsReporter />
+          {children}
+          <OfflineIndicator />
+          <Analytics />
+        </ErrorBoundary>
       </body>
     </html>
   )
