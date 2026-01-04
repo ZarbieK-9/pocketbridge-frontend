@@ -34,25 +34,26 @@ export function SyncIndicator({ status, message, className }: SyncIndicatorProps
 
   if (!show) return null;
 
-  const icons = {
+  const icons: Record<Exclude<SyncStatus, 'idle'>, typeof Loader2> = {
     sending: Loader2,
     synced: CheckCircle2,
     error: Send,
   };
 
-  const styles = {
+  const styles: Record<Exclude<SyncStatus, 'idle'>, string> = {
     sending: 'text-primary',
     synced: 'text-green-600',
     error: 'text-red-600',
   };
 
-  const messages = {
+  const messages: Record<Exclude<SyncStatus, 'idle'>, string> = {
     sending: 'Syncing...',
     synced: 'Synced',
     error: 'Sync failed',
   };
 
-  const Icon = icons[status] || Send;
+  // Status is guaranteed to not be 'idle' here due to early return above
+  const Icon = icons[status as Exclude<SyncStatus, 'idle'>] || Send;
 
   return (
     <div
@@ -65,11 +66,11 @@ export function SyncIndicator({ status, message, className }: SyncIndicatorProps
         className={cn(
           'h-3 w-3',
           status === 'sending' && 'animate-spin',
-          styles[status]
+          styles[status as Exclude<SyncStatus, 'idle'>]
         )}
       />
-      <span className={cn(styles[status])}>
-        {message || messages[status]}
+      <span className={cn(styles[status as Exclude<SyncStatus, 'idle'>])}>
+        {message || messages[status as Exclude<SyncStatus, 'idle'>]}
       </span>
     </div>
   );
