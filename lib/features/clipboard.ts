@@ -74,15 +74,28 @@ export async function receiveClipboardText(
 
     return payload.text;
   } catch (error) {
-    // Check if it's a decryption error (invalid key)
-    if (error instanceof Error && error.message.includes('invalid key')) {
-      console.warn('[Clipboard] Decryption failed - event may be from different identity keypair or corrupted', {
-        eventId: event.event_id,
-        userId: event.user_id?.substring(0, 16) + '...',
-        deviceId: event.device_id,
-      });
+    // Decryption errors are expected in some cases:
+    // - Events from other users (filtered by user_id check above)
+    // - Events encrypted with different session keys
+    // - Corrupted data
+    // Only log at debug level to avoid console spam
+    if (error instanceof DOMException || 
+        (error instanceof Error && (
+          error.message.includes('invalid key') ||
+          error.message.includes('decrypt') ||
+          error.message.includes('operation failed')
+        ))) {
+      // Silently ignore decryption failures - they're expected for events from other sessions
+      // Only log in development mode
+      if (process.env.NODE_ENV === 'development') {
+        console.debug('[Clipboard] Decryption failed - event may be from different session or corrupted', {
+          eventId: event.event_id?.substring(0, 8) + '...',
+          deviceId: event.device_id?.substring(0, 8) + '...',
+        });
+      }
     } else {
-      console.error('[Clipboard] Failed to decrypt clipboard event:', error);
+      // Only log unexpected errors
+      console.error('[Clipboard] Unexpected error decrypting clipboard event:', error);
     }
     return null;
   }

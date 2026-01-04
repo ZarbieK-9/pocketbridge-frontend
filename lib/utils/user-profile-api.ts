@@ -41,19 +41,36 @@ interface ServerUserProfile {
  * Get user profile from server
  */
 export async function fetchUserProfile(userId: string): Promise<ServerUserProfile | null> {
+  // Don't fetch on server-side
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
   try {
     const apiUrl = getBackendApiUrl();
+    if (!apiUrl) {
+      logger.warn('Backend API URL not configured, skipping profile fetch');
+      return null;
+    }
+
+    // Create abort controller for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
     const response = await fetch(`${apiUrl}/api/user/profile`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
         'X-User-ID': userId,
       },
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       if (response.status === 404) {
-        return null;
+        return null; // Profile doesn't exist yet, this is fine
       }
       throw new Error(`Failed to fetch profile: ${response.statusText}`);
     }
@@ -63,7 +80,27 @@ export async function fetchUserProfile(userId: string): Promise<ServerUserProfil
     const profile = (data.profile || data) as ServerUserProfile;
     return profile;
   } catch (error) {
-    logger.error('Failed to fetch user profile', error);
+    // Network errors are expected when offline or backend unavailable
+    // Only log as warning, not error, since we have local fallback
+    const isNetworkError = error instanceof TypeError && 
+      (error.message.includes('fetch') || 
+       error.message.includes('NetworkError') ||
+       error.message.includes('Failed to fetch'));
+    
+    const isAbortError = error instanceof Error && error.name === 'AbortError';
+    
+    if (isNetworkError || isAbortError) {
+      // Silently fall back to local storage for network/timeout errors
+      // These are expected when offline or backend is slow
+      logger.debug('Backend unavailable, using local profile', {
+        error: error instanceof Error ? error.message : String(error),
+        isTimeout: isAbortError,
+      });
+    } else {
+      logger.warn('Failed to fetch user profile from server', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     return null;
   }
 }

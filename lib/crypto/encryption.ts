@@ -80,7 +80,8 @@ export async function decryptPayload(
     const payloadStr = new TextDecoder().decode(payloadBuffer);
     return JSON.parse(payloadStr) as EventPayload;
   } catch (error) {
-    console.error('[Phase1] Decryption failed:', error);
+    // Don't log decryption errors here - let the caller decide how to handle them
+    // This prevents console spam when decrypting events from other sessions
     throw new Error('Failed to decrypt payload: invalid key or corrupted data');
   }
 }
@@ -114,7 +115,8 @@ export async function decryptPayloadLegacy(
     const payloadStr = new TextDecoder().decode(payloadBuffer);
     return JSON.parse(payloadStr) as EventPayload;
   } catch (error) {
-    console.error('[Phase1] Decryption failed:', error);
+    // Don't log decryption errors here - let the caller decide how to handle them
+    // This prevents console spam when decrypting events from other sessions
     throw new Error('Failed to decrypt payload: invalid key or corrupted data');
   }
 }

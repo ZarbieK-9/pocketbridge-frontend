@@ -11,14 +11,19 @@ import { useRouter } from 'next/navigation';
 import { OnboardingFlow } from '@/components/onboarding/onboarding-flow';
 import { useCrypto } from '@/hooks/use-crypto';
 import { getOrCreateDeviceName } from '@/lib/utils/device';
-import { loadUserProfile, getOrCreateUserProfile } from '@/lib/utils/user-profile';
+import { loadUserProfile } from '@/lib/utils/user-profile';
 import { logger } from '@/lib/utils/logger';
 
 export default function OnboardingPage() {
+  // ALL HOOKS MUST BE CALLED UNCONDITIONALLY AT THE TOP
   const router = useRouter();
   const { identityKeyPair, isInitialized, error: cryptoError } = useCrypto();
   const [isLoading, setIsLoading] = useState(true);
+  
+  // Call this unconditionally (before any early returns) to avoid hook order issues
+  const deviceName = getOrCreateDeviceName();
 
+  // Check onboarding status and handle redirects
   useEffect(() => {
     if (!isInitialized) {
       return; // Wait for crypto to initialize
@@ -78,17 +83,6 @@ export default function OnboardingPage() {
       </div>
     );
   }
-
-  const deviceName = getOrCreateDeviceName();
-  const [profile, setProfile] = useState<ReturnType<typeof loadUserProfile>>(null);
-
-  useEffect(() => {
-    if (isInitialized && identityKeyPair) {
-      getOrCreateUserProfile(identityKeyPair).then(setProfile).catch((error) => {
-        logger.error('Failed to load user profile', error);
-      });
-    }
-  }, [isInitialized, identityKeyPair]);
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-muted/30">

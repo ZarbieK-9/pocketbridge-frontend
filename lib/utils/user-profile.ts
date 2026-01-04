@@ -89,9 +89,18 @@ export async function getOrCreateUserProfile(identityKeyPair: Ed25519KeyPair): P
         return localProfile;
       }
     } catch (error) {
-      logger.warn('Failed to fetch profile from server, using local storage', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      // Network errors are expected when offline - don't log as warning
+      const isNetworkError = error instanceof TypeError && 
+        (error.message.includes('fetch') || 
+         error.message.includes('NetworkError') ||
+         error.message.includes('Failed to fetch'));
+      
+      if (!isNetworkError) {
+        logger.warn('Failed to fetch profile from server, using local storage', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      // Silently fall back to local storage for network errors
     }
 
   // Fallback to local storage

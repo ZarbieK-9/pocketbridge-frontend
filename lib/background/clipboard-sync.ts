@@ -12,7 +12,7 @@ import { sendClipboardText, receiveClipboardText } from '@/lib/features/clipboar
 import type { SessionKeys, EncryptedEvent } from '@/types';
 
 const CLIPBOARD_STATE_KEY = 'clipboard:last_synced';
-const CLIPBOARD_MONITOR_INTERVAL = 1000; // Check every 1 second
+const CLIPBOARD_MONITOR_INTERVAL = 3000; // Check every 3 seconds (reduced frequency to avoid permission prompts)
 
 interface ClipboardSyncState {
   lastClipboardText: string;
@@ -53,10 +53,17 @@ export class BackgroundClipboardSync {
     // Load last clipboard state
     await this.loadLastClipboard();
 
-    // Start monitoring clipboard changes
+    // Start monitoring clipboard changes (reduced frequency to avoid permission prompts)
+    // Only checks when page is focused
     this.monitorInterval = setInterval(() => {
       this.checkClipboard();
     }, CLIPBOARD_MONITOR_INTERVAL);
+
+    // Also listen for paste events to detect clipboard changes immediately
+    // This provides immediate sync without frequent polling
+    if (typeof document !== 'undefined') {
+      document.addEventListener('paste', this.handlePasteEvent);
+    }
 
     console.log('[BackgroundClipboard] Started automatic monitoring');
   }
@@ -69,10 +76,27 @@ export class BackgroundClipboardSync {
       clearInterval(this.monitorInterval);
       this.monitorInterval = null;
     }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('paste', this.handlePasteEvent);
+    }
     this.state.isMonitoring = false;
     this.saveState();
     console.log('[BackgroundClipboard] Stopped monitoring');
   }
+
+  /**
+   * Handle paste events to detect clipboard changes immediately
+   */
+  private handlePasteEvent = async (event: ClipboardEvent): Promise<void> => {
+    // When user pastes, check clipboard (they've already interacted)
+    // This allows us to read clipboard without permission prompts
+    if (this.sessionKeys) {
+      // Small delay to let paste complete
+      setTimeout(() => {
+        this.checkClipboard();
+      }, 100);
+    }
+  };
 
   /**
    * Handle incoming clipboard event from WebSocket
@@ -109,14 +133,21 @@ export class BackgroundClipboardSync {
 
   /**
    * Check clipboard for changes and sync
+   * Only reads clipboard when page is focused and has user interaction
    */
   private async checkClipboard(): Promise<void> {
     if (!this.sessionKeys) {
       return;
     }
 
+    // Only check clipboard if page is focused (reduces permission prompts)
+    if (typeof document !== 'undefined' && !document.hasFocus()) {
+      return;
+    }
+
     try {
       // Read clipboard (requires clipboard-read permission)
+      // This will be called less frequently to avoid permission prompts
       const text = await navigator.clipboard.readText();
       
       // Only sync if text changed and is not empty
@@ -134,6 +165,7 @@ export class BackgroundClipboardSync {
     } catch (error) {
       // Clipboard API may not be available or permission denied
       // This is expected in some contexts (e.g., when app is in background)
+      // Silently ignore NotAllowedError to prevent console spam
       if (error instanceof Error && error.name !== 'NotAllowedError') {
         console.error('[BackgroundClipboard] Failed to read clipboard:', error);
       }
