@@ -54,7 +54,7 @@ export function DeviceManagement({ device, apiUrl, userId, onDeviceUpdated }: De
 
     try {
       const response = await fetch(`${apiUrl}/api/devices/${device.device_id}/rename`, {
-        method: 'PUT',
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-User-ID': userId,

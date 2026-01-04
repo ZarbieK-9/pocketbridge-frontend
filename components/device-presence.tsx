@@ -25,6 +25,7 @@ export interface DevicePresence extends Device {
   is_online: boolean;
   last_activity?: string; // Last activity timestamp
   event_count?: number; // Number of events sent/received
+  registered_at?: number; // Unix timestamp when device was registered
 }
 
 interface DevicePresenceListProps {
@@ -44,8 +45,9 @@ function getDeviceIcon(type: 'mobile' | 'desktop' | 'web') {
   return <Icon className="h-5 w-5" />;
 }
 
-function formatLastSeen(lastSeen: string): string {
-  const date = new Date(lastSeen);
+function formatLastSeen(lastSeen: string | number): string {
+  // Handle both string (ISO date) and number (Unix timestamp)
+  const date = typeof lastSeen === 'number' ? new Date(lastSeen) : new Date(lastSeen);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);
@@ -81,8 +83,20 @@ export function DevicePresenceList({ apiUrl, userId, className }: DevicePresence
 
         const data = await response.json();
         const allDevices: DevicePresence[] = data.devices || [];
-        const onlineDevices = allDevices.filter((d) => d.is_online);
-        setDevices(onlineDevices);
+        // Sort devices: online first, then by last_seen (descending)
+        // This ensures online devices are always shown first, even if they were seen earlier
+        const sortedDevices = [...allDevices].sort((a, b) => {
+          // First, sort by online status (online first)
+          if (a.is_online !== b.is_online) {
+            return b.is_online ? 1 : -1;
+          }
+          // Then by last_seen (most recent first)
+          // last_seen is a number (timestamp) from the API
+          const aTime = typeof a.last_seen === 'number' ? a.last_seen : (typeof a.last_seen === 'string' ? new Date(a.last_seen).getTime() : 0);
+          const bTime = typeof b.last_seen === 'number' ? b.last_seen : (typeof b.last_seen === 'string' ? new Date(b.last_seen).getTime() : 0);
+          return bTime - aTime;
+        });
+        setDevices(sortedDevices);
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error');
@@ -126,7 +140,7 @@ export function DevicePresenceList({ apiUrl, userId, className }: DevicePresence
       <CardHeader>
         <CardTitle>Devices</CardTitle>
         <CardDescription>
-          {devices.length} {devices.length === 1 ? 'device' : 'devices'} connected
+          {devices.length} {devices.length === 1 ? 'device' : 'devices'} registered
         </CardDescription>
       </CardHeader>
       <CardContent>

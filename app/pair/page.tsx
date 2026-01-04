@@ -256,7 +256,7 @@ export default function PairPage() {
       const data = await parsePairingCode(validatedCode, userId);
       
       if (!data) {
-        setResult({
+        setResult({ 
           success: false,
           message: 'Invalid or expired pairing code. Please check and try again.',
         });
@@ -266,6 +266,23 @@ export default function PairPage() {
       }
 
       setPairingData(data);
+      
+      // Check if identity keypair was saved and changed (means we switched accounts)
+      // If the pairing data has a different keypair than what's in memory, we need to reload
+      if (identityKeyPair && identityKeyPair.publicKeyHex !== data.publicKeyHex) {
+        logger.info('Identity keypair changed, reloading page to re-initialize crypto', {
+          oldKeypair: identityKeyPair.publicKeyHex.substring(0, 16) + '...',
+          newKeypair: data.publicKeyHex.substring(0, 16) + '...',
+        });
+        // Save WebSocket URL before reload
+        setWsUrl(data.wsUrl);
+        // Small delay to show success message
+        setTimeout(() => {
+          window.location.reload();
+        }, 500);
+        return;
+      }
+      
       setWsUrl(data.wsUrl); // Save to localStorage
       
       // Validate and save device name

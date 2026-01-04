@@ -25,8 +25,35 @@ export default function DashboardPage() {
       if (profile && profile.userId === identityKeyPair.publicKeyHex) {
         setUserProfile(profile);
       }
+
+      // Sync device count from API
+      const syncDeviceCount = async () => {
+        try {
+          const response = await fetch(`${apiUrl}/api/devices`, {
+            headers: { 'X-User-ID': identityKeyPair.publicKeyHex },
+          });
+          if (response.ok) {
+            const data = await response.json();
+            const deviceCount = data.devices?.length || 0;
+            const currentProfile = loadUserProfile();
+            if (currentProfile && currentProfile.deviceCount !== deviceCount) {
+              const { updateUserProfile } = await import('@/lib/utils/user-profile');
+              await updateUserProfile({ deviceCount }, identityKeyPair.publicKeyHex);
+              const updatedProfile = loadUserProfile();
+              if (updatedProfile) {
+                setUserProfile(updatedProfile);
+              }
+            }
+          }
+        } catch (error) {
+          // Silently fail - device count sync is not critical
+          console.debug('Failed to sync device count', error);
+        }
+      };
+
+      syncDeviceCount();
     }
-  }, [isInitialized, identityKeyPair]);
+  }, [isInitialized, identityKeyPair, apiUrl]);
 
   return (
     <MainLayout>

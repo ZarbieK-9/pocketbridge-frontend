@@ -71,7 +71,7 @@ export default function SettingsPage() {
           return;
         }
         const response = await fetch(`${apiUrl}/api/devices/${deviceId}/rename`, {
-          method: 'PUT',
+          method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'X-User-ID': userId,
