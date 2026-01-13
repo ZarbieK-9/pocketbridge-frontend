@@ -710,7 +710,7 @@ export class WebSocketClient {
     this.stopHeartbeat();
 
     this.heartbeatTimer = setInterval(() => {
-      // Send ping to keep connection alive
+      // Send ping message to keep connection alive
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         try {
           this.send({

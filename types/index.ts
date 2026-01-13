@@ -138,6 +138,8 @@ export interface WSMessage {
     | 'replay_response'
     | 'session_expiring_soon'
     | 'full_resync_required'
+    | 'ping'
+    | 'pong'
     | 'error';
   payload: unknown;
 }
