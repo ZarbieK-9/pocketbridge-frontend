@@ -24,6 +24,7 @@ export function useWebSocket({
   autoConnect = true,
   waitForCrypto = true, // Default to true for safety
 }: UseWebSocketOptions) {
+  const logPrefix = '[useWebSocket]';
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [lastEvent, setLastEvent] = useState<EncryptedEvent | null>(null);
   const [error, setError] = useState<Error | null>(null);
@@ -33,6 +34,13 @@ export function useWebSocket({
   const { isInitialized: cryptoInitialized, error: cryptoError } = useCrypto();
 
   const connect = useCallback(async () => {
+    // Guard: cannot connect without required parameters
+    if (!url || !deviceId) {
+      console.debug(logPrefix, 'connect aborted: missing params', { url, deviceId });
+      debugger; // Breakpoint to inspect missing params in devtools
+      throw new Error('WebSocket URL and deviceId are required to connect');
+    }
+
     // If we need to wait for crypto and it's not initialized, wait or throw
     if (waitForCrypto && !cryptoInitialized) {
       if (cryptoError) {
@@ -46,10 +54,12 @@ export function useWebSocket({
       }
       
       if (!cryptoInitialized) {
+        console.debug(logPrefix, 'connect aborted: crypto init timeout');
         throw new Error('Crypto initialization timeout. Please ensure crypto is initialized before connecting.');
       }
     }
     
+    console.debug(logPrefix, 'connecting', { url, deviceId, waitForCrypto });
     const client = getWebSocketClient(url, deviceId);
     await client.connect();
   }, [url, deviceId, waitForCrypto, cryptoInitialized, cryptoError]);
@@ -73,10 +83,20 @@ export function useWebSocket({
   }, [url, deviceId]);
 
   useEffect(() => {
+    // If required params are missing, do not initialize the client
+    if (!url || !deviceId) {
+      console.debug(logPrefix, 'init aborted: missing params', { url, deviceId });
+      debugger; // Breakpoint to inspect initial render values
+      setError(new Error('WebSocket URL or deviceId missing'));
+      setStatus('error');
+      return;
+    }
+
     const client = getWebSocketClient(url, deviceId);
 
     // Register handlers
     const unsubStatus = client.onStatus((newStatus) => {
+      console.debug(logPrefix, 'status change', { newStatus });
       setStatus(newStatus);
       // Update session keys when connected
       if (newStatus === 'connected') {
@@ -90,6 +110,7 @@ export function useWebSocket({
       setLastEvent(event);
     });
     const unsubError = client.onError((err) => {
+      console.error(logPrefix, 'client error', err);
       setError(err);
     });
 
@@ -99,6 +120,7 @@ export function useWebSocket({
         // Don't connect yet, wait for crypto to initialize
         // The effect will re-run when cryptoInitialized changes
       } else {
+        console.debug(logPrefix, 'autoConnect -> connect()');
         connect();
       }
     }
