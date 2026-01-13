@@ -147,7 +147,23 @@ export class ClipboardMonitor {
     
     // Poll clipboard every 500ms
     this.intervalId = setInterval(async () => {
-      await this.checkClipboard();
+      try {
+        await this.checkClipboard();
+      } catch (error) {
+        // Log clipboard errors but don't stop monitoring
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        if (errorMsg.includes('NotAllowedError') || errorMsg.includes('PermissionDenied')) {
+          // Permission denied - user needs to grant clipboard access
+          // Stop monitoring to avoid repeated permission errors
+          this.stop();
+          console.warn('[Clipboard] Clipboard access denied. Please grant clipboard permissions in browser settings.');
+        } else if (errorMsg.includes('NotSupported') || errorMsg.includes('not supported')) {
+          // Clipboard API not supported
+          this.stop();
+          console.warn('[Clipboard] Clipboard API not supported in this browser.');
+        }
+        // For other errors, just log and continue
+      }
     }, 500);
   }
 

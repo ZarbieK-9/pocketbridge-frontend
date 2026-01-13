@@ -710,7 +710,19 @@ export class WebSocketClient {
     this.stopHeartbeat();
 
     this.heartbeatTimer = setInterval(() => {
-      // Send ping (if server supports it)
+      // Send ping to keep connection alive
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        try {
+          this.send({
+            type: 'ping',
+            payload: { timestamp: Date.now() },
+          });
+        } catch (error) {
+          logger.debug('Heartbeat ping failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     }, WS_HEARTBEAT_INTERVAL);
   }
 
@@ -1021,10 +1033,26 @@ export class WebSocketClient {
  * Singleton WebSocket client instance
  */
 let clientInstance: WebSocketClient | null = null;
+let lastUrl: string | null = null;
+let lastDeviceId: string | null = null;
 
 export function getWebSocketClient(url?: string, deviceId?: string): WebSocketClient {
+  // If URL or deviceId changed, recreate the client
+  if (clientInstance && (url !== lastUrl || deviceId !== lastDeviceId)) {
+    logger.info('WebSocket client parameters changed, creating new instance', { 
+      oldUrl: lastUrl?.substring(0, 30), 
+      newUrl: url?.substring(0, 30),
+      oldDeviceId: lastDeviceId?.substring(0, 8),
+      newDeviceId: deviceId?.substring(0, 8),
+    });
+    clientInstance.disconnect();
+    clientInstance = null;
+  }
+
   if (!clientInstance && url && deviceId) {
     clientInstance = new WebSocketClient(url, deviceId);
+    lastUrl = url;
+    lastDeviceId = deviceId;
   }
 
   if (!clientInstance) {
