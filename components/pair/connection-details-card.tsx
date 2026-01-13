@@ -28,6 +28,14 @@ export function ConnectionDetailsCard({
   const [displayDeviceName, setDisplayDeviceName] = useState<string>('Loading...');
   const [displayWsUrl, setDisplayWsUrl] = useState<string>('Loading...');
   
+  const getErrorMessage = (err: any): string => {
+    if (typeof err === 'string') return err;
+    if (typeof err === 'object' && err !== null && 'message' in err) {
+      return (err as any).message;
+    }
+    return 'An unknown error occurred';
+  };
+  
   useEffect(() => {
     if (typeof window !== 'undefined') {
       setDisplayDeviceName(deviceName || getOrCreateDeviceName() || 'Unknown Device');
@@ -106,7 +114,7 @@ export function ConnectionDetailsCard({
               <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
               <div>
                 <p className="font-medium">Error Details</p>
-                <p className="mt-1">{connectionError.message}</p>
+                <p className="mt-1">{getErrorMessage(connectionError)}</p>
               </div>
             </div>
           </div>

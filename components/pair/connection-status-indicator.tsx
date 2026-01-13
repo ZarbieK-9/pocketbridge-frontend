@@ -23,6 +23,14 @@ export function ConnectionStatusIndicator({
 }: ConnectionStatusIndicatorProps) {
   const [isOnline, setIsOnline] = useState(true);
 
+  const getErrorMessage = (err: any): string => {
+    if (typeof err === 'string') return err;
+    if (typeof err === 'object' && err !== null && 'message' in err) {
+      return (err as any).message;
+    }
+    return 'Unknown error';
+  };
+
   useEffect(() => {
     setIsOnline(navigator.onLine);
     
@@ -89,8 +97,8 @@ export function ConnectionStatusIndicator({
         </span>
       )}
       {error && showDetails && (
-        <span className="text-xs text-red-600 ml-2" title={error.message}>
-          {error.message.substring(0, 30)}...
+        <span className="text-xs text-red-600 ml-2" title={getErrorMessage(error)}>
+          {getErrorMessage(error).substring(0, 30)}...
         </span>
       )}
     </div>

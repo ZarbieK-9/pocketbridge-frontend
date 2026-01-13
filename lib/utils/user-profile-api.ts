@@ -130,6 +130,12 @@ export async function updateUserProfileOnServer(
       serverUpdates.preferences = updates.preferences;
     }
 
+    // Guard: skip if no actual updates
+    if (Object.keys(serverUpdates).length === 0) {
+      logger.debug('No valid updates to send to server', { userId: userId.substring(0, 16) + '...' });
+      return null;
+    }
+
     // Generate timestamp right before creating signature (to minimize time gap)
     const timestamp = Date.now();
 
