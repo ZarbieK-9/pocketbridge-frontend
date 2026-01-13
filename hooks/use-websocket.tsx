@@ -37,8 +37,7 @@ export function useWebSocket({
     // Guard: cannot connect without required parameters
     if (!url || !deviceId) {
       console.debug(logPrefix, 'connect aborted: missing params', { url, deviceId });
-      debugger; // Breakpoint to inspect missing params in devtools
-      throw new Error('WebSocket URL and deviceId are required to connect');
+      return; // Gracefully no-op until params are available
     }
 
     // If we need to wait for crypto and it's not initialized, wait or throw
@@ -86,9 +85,8 @@ export function useWebSocket({
     // If required params are missing, do not initialize the client
     if (!url || !deviceId) {
       console.debug(logPrefix, 'init aborted: missing params', { url, deviceId });
-      debugger; // Breakpoint to inspect initial render values
-      setError(new Error('WebSocket URL or deviceId missing'));
-      setStatus('error');
+      setError(null);
+      setStatus('disconnected');
       return;
     }
 
