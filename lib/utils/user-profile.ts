@@ -215,18 +215,10 @@ export function hasCompletedOnboarding(userId: string): boolean {
 /**
  * Mark onboarding as completed
  * 
- * SECURITY: Requires signature verification on server
+ * SECURITY: Syncs to server with signature verification when possible.
+ * Always marks as complete locally to support offline use.
  */
 export async function completeOnboarding(userId: string): Promise<void> {
-  // Sync to server with signature verification (authoritative)
-  try {
-    await markOnboardingCompleteOnServer(userId);
-    logger.info('Onboarding completion synced to server', { userId: userId.substring(0, 16) + '...' });
-  } catch (error) {
-    logger.error('Failed to sync onboarding completion to server', error);
-    throw error; // Caller decides how to handle failure (do not mark locally)
-  }
-
   // Ensure profile exists before marking as complete locally
   let existing = loadUserProfile();
   if (!existing || existing.userId !== userId) {
@@ -238,9 +230,23 @@ export async function completeOnboarding(userId: string): Promise<void> {
     };
   }
 
+  // Mark as complete locally FIRST (so user can proceed)
   existing.onboardingCompleted = true;
   existing.lastSeen = Date.now();
   saveUserProfile(existing);
+  
+  logger.info('Onboarding marked complete locally', { userId: userId.substring(0, 16) + '...' });
+
+  // Try to sync to server (non-blocking)
+  try {
+    await markOnboardingCompleteOnServer(userId);
+    logger.info('Onboarding completion synced to server', { userId: userId.substring(0, 16) + '...' });
+  } catch (error) {
+    // Log but don't throw - onboarding already complete locally
+    logger.warn('Failed to sync onboarding completion to server (non-blocking)', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /**

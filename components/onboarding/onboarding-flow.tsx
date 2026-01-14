@@ -108,29 +108,9 @@ export function OnboardingFlow({ userId, currentDeviceName, onComplete }: Onboar
         await updateUserProfile(profileUpdates, userId);
       }
       
-      // Mark onboarding as complete on server (with signature)
-      try {
-        await completeOnboarding(userId);
-        logger.info('Onboarding completed', { userId, deviceName, displayName });
-      } catch (error) {
-        logger.warn('Failed to sync onboarding to server, marking complete locally', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        // Continue anyway - mark as complete locally
-        // This allows offline onboarding to work
-        let existing = loadUserProfile();
-        if (!existing || existing.userId !== userId) {
-          existing = {
-            userId,
-            createdAt: Date.now(),
-            lastSeen: Date.now(),
-            onboardingCompleted: false,
-          };
-        }
-        existing.onboardingCompleted = true;
-        existing.lastSeen = Date.now();
-        saveUserProfile(existing);
-      }
+      // Mark onboarding as complete (saves locally, syncs to server in background)
+      await completeOnboarding(userId);
+      logger.info('Onboarding completed successfully', { userId, deviceName, displayName });
       
       setStep('complete');
       // Auto-redirect after 1.5 seconds

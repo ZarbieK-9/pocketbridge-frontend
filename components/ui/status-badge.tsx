@@ -8,9 +8,10 @@ interface StatusBadgeProps {
   status: "online" | "offline" | "syncing" | "error" | "ready"
   showDot?: boolean
   className?: string
+  label?: string  // Optional custom label
 }
 
-export function StatusBadge({ status, showDot = true, className }: StatusBadgeProps) {
+export function StatusBadge({ status, showDot = true, className, label }: StatusBadgeProps) {
   const variants = {
     online: "bg-green-100 text-green-800 border-green-200",
     offline: "bg-gray-100 text-gray-600 border-gray-200",
@@ -26,6 +27,15 @@ export function StatusBadge({ status, showDot = true, className }: StatusBadgePr
     error: "bg-red-500 animate-pulse-dot",
     ready: "bg-secondary",
   }
+  
+  // Default labels for clarity
+  const defaultLabels = {
+    online: "Connected",
+    offline: "Disconnected",
+    syncing: "Syncing",
+    error: "Error",
+    ready: "Ready",
+  }
 
   return (
     <div
@@ -36,7 +46,7 @@ export function StatusBadge({ status, showDot = true, className }: StatusBadgePr
       )}
     >
       {showDot && <div className={cn("h-2 w-2 rounded-full", dotVariants[status])} />}
-      <span className="capitalize">{status === 'ready' ? 'Ready' : status}</span>
+      <span>{label || defaultLabels[status]}</span>
     </div>
   )
 }
