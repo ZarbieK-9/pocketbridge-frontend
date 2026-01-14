@@ -31,6 +31,39 @@ export interface UserProfile {
 
 const PROFILE_STORAGE_KEY = 'pocketbridge_user_profile';
 
+function mapServerProfileToLocal(serverProfile: any, userId: string): UserProfile {
+  return {
+    userId: serverProfile.user_id || userId,
+    displayName: serverProfile.display_name || undefined,
+    email: serverProfile.email || undefined,
+    preferences: serverProfile.preferences || {},
+    createdAt: new Date(serverProfile.created_at).getTime(),
+    lastSeen: new Date(serverProfile.last_seen).getTime(),
+    onboardingCompleted: serverProfile.onboarding_completed || false,
+  };
+}
+
+export async function fetchAndCacheUserProfile(userId: string): Promise<UserProfile | null> {
+  try {
+    const serverProfile = await fetchUserProfile(userId);
+    if (!serverProfile) return null;
+    const localProfile = mapServerProfileToLocal(serverProfile, userId);
+    saveUserProfile(localProfile);
+    return localProfile;
+  } catch (error) {
+    const isNetworkError = error instanceof TypeError &&
+      (error.message.includes('fetch') || 
+       error.message.includes('NetworkError') ||
+       error.message.includes('Failed to fetch'));
+    if (!isNetworkError) {
+      logger.warn('Failed to fetch profile from server', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return null;
+  }
+}
+
 /**
  * Save user profile to localStorage
  */
@@ -66,42 +99,19 @@ export function loadUserProfile(): UserProfile | null {
  * Get or create user profile from identity keypair
  * 
  * SECURITY: Attempts to fetch profile from server first to ensure consistency.
- * Falls back to local storage if server is unavailable.
+ * Falls back to local storage if server is unavailable or slow to update.
+ * 
+ * IMPROVED: Also checks local storage if it shows onboarding is completed,
+ * preventing redirect loops when server is slow to sync after pairing.
  */
 export async function getOrCreateUserProfile(identityKeyPair: Ed25519KeyPair): Promise<UserProfile> {
   const userId = identityKeyPair.publicKeyHex;
   
-    // Try to fetch from server first (authoritative source)
-    try {
-      const serverProfile = await fetchUserProfile(userId);
-      if (serverProfile) {
-        // Server returns snake_case, convert to camelCase for local storage
-        const localProfile: UserProfile = {
-          userId: serverProfile.user_id || userId,
-          displayName: serverProfile.display_name || undefined,
-          email: serverProfile.email || undefined,
-          preferences: serverProfile.preferences || {},
-          createdAt: new Date(serverProfile.created_at).getTime(),
-          lastSeen: new Date(serverProfile.last_seen).getTime(),
-          onboardingCompleted: serverProfile.onboarding_completed || false,
-        };
-        saveUserProfile(localProfile);
-        return localProfile;
-      }
-    } catch (error) {
-      // Network errors are expected when offline - don't log as warning
-      const isNetworkError = error instanceof TypeError && 
-        (error.message.includes('fetch') || 
-         error.message.includes('NetworkError') ||
-         error.message.includes('Failed to fetch'));
-      
-      if (!isNetworkError) {
-        logger.warn('Failed to fetch profile from server, using local storage', {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      // Silently fall back to local storage for network errors
-    }
+  // Try to fetch from server first (authoritative source)
+  const serverProfile = await fetchAndCacheUserProfile(userId);
+  if (serverProfile) {
+    return serverProfile;
+  }
 
   // Fallback to local storage
   const existing = loadUserProfile();
@@ -111,6 +121,17 @@ export async function getOrCreateUserProfile(identityKeyPair: Ed25519KeyPair): P
     // Update last seen
     existing.lastSeen = Date.now();
     saveUserProfile(existing);
+    
+    // IMPORTANT: If local storage says onboarding is completed,
+    // return it even if server hasn't synced yet.
+    // This prevents redirect loops after pairing when server is slow.
+    if (existing.onboardingCompleted) {
+      logger.info('Returning local profile with onboarding completed', {
+        userId: userId.substring(0, 16) + '...',
+        reason: 'Server may be syncing'
+      });
+    }
+    
     return existing;
   }
   
@@ -197,10 +218,18 @@ export function hasCompletedOnboarding(userId: string): boolean {
  * SECURITY: Requires signature verification on server
  */
 export async function completeOnboarding(userId: string): Promise<void> {
-  // Ensure profile exists before marking as complete
+  // Sync to server with signature verification (authoritative)
+  try {
+    await markOnboardingCompleteOnServer(userId);
+    logger.info('Onboarding completion synced to server', { userId: userId.substring(0, 16) + '...' });
+  } catch (error) {
+    logger.error('Failed to sync onboarding completion to server', error);
+    throw error; // Caller decides how to handle failure (do not mark locally)
+  }
+
+  // Ensure profile exists before marking as complete locally
   let existing = loadUserProfile();
   if (!existing || existing.userId !== userId) {
-    // Create profile if it doesn't exist
     existing = {
       userId,
       createdAt: Date.now(),
@@ -208,21 +237,10 @@ export async function completeOnboarding(userId: string): Promise<void> {
       onboardingCompleted: false,
     };
   }
-  
-  // Update local storage
+
   existing.onboardingCompleted = true;
   existing.lastSeen = Date.now();
   saveUserProfile(existing);
-
-  // Sync to server with signature verification (non-blocking)
-  try {
-    await markOnboardingCompleteOnServer(userId);
-    logger.info('Onboarding completion synced to server', { userId: userId.substring(0, 16) + '...' });
-  } catch (error) {
-    logger.error('Failed to sync onboarding completion to server', error);
-    // Non-blocking: local update still succeeds
-    throw error; // Re-throw so caller knows server sync failed
-  }
 }
 
 /**

@@ -309,7 +309,13 @@ export default function PairPage() {
       // Mark onboarding as completed after successful pairing
       if (identityKeyPair) {
         const { completeOnboarding } = await import('@/lib/utils/user-profile');
-        completeOnboarding(identityKeyPair.publicKeyHex);
+        try {
+          await completeOnboarding(identityKeyPair.publicKeyHex);
+        } catch (error) {
+          logger.warn('Failed to mark onboarding complete after pairing', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       // Update device name on backend after pairing (non-blocking)

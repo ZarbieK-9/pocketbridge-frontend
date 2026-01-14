@@ -125,6 +125,37 @@ export interface SessionKeys {
   serverKeyHex: string;
 }
 
+// Presence/system messages
+export interface DeviceInfo {
+  device_id: string;
+  device_name?: string;
+  device_type?: 'mobile' | 'desktop' | 'web';
+  device_os?: string;
+  is_online: boolean;
+  last_seen: number;
+  registered_at?: number;
+  ip_address?: string;
+}
+
+export interface DevicePresence {
+  type: 'device_presence';
+  user_id: string;
+  online_devices: DeviceInfo[];
+  timestamp: number;
+}
+
+export interface DeviceStatusChange {
+  type: 'device_status_changed';
+  device_id: string;
+  device_name?: string;
+  device_type?: 'mobile' | 'desktop' | 'web';
+  user_id?: string;
+  is_online: boolean;
+  timestamp: number;
+}
+
+export type SystemMessage = DevicePresence | DeviceStatusChange;
+
 // WebSocket message types
 export interface WSMessage {
   type:
@@ -140,7 +171,9 @@ export interface WSMessage {
     | 'full_resync_required'
     | 'ping'
     | 'pong'
-    | 'error';
+    | 'error'
+    | 'device_status_changed'
+    | 'device_presence';
   payload: unknown;
 }
 

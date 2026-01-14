@@ -11,6 +11,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { DeviceManagement } from '@/components/device-management';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
+import { useWebSocket } from '@/hooks/use-websocket';
+import { getOrCreateDeviceId } from '@/lib/utils/device';
+import { config } from '@/lib/config';
 
 export interface Device {
   device_id: string;
@@ -66,9 +69,28 @@ export function DevicePresenceList({ apiUrl, userId, className }: DevicePresence
   const [devices, setDevices] = useState<DevicePresence[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const deviceId = getOrCreateDeviceId();
+  const wsUrl = config.wsUrl;
+  const { isConnected, lastSystemMessage } = useWebSocket({
+    url: wsUrl,
+    deviceId,
+    autoConnect: true,
+  });
+
+  const sortDevices = (list: DevicePresence[]) => {
+    return [...list].sort((a, b) => {
+      if (a.is_online !== b.is_online) {
+        return b.is_online ? 1 : -1;
+      }
+      const aTime = typeof a.last_seen === 'number' ? a.last_seen : (typeof a.last_seen === 'string' ? new Date(a.last_seen).getTime() : 0);
+      const bTime = typeof b.last_seen === 'number' ? b.last_seen : (typeof b.last_seen === 'string' ? new Date(b.last_seen).getTime() : 0);
+      return bTime - aTime;
+    });
+  };
 
   // Fetch devices
   useEffect(() => {
+    let isActive = true;
     async function fetchDevices() {
       try {
         const response = await fetch(`${apiUrl}/api/devices`, {
@@ -83,35 +105,77 @@ export function DevicePresenceList({ apiUrl, userId, className }: DevicePresence
 
         const data = await response.json();
         const allDevices: DevicePresence[] = data.devices || [];
-        // Sort devices: online first, then by last_seen (descending)
-        // This ensures online devices are always shown first, even if they were seen earlier
-        const sortedDevices = [...allDevices].sort((a, b) => {
-          // First, sort by online status (online first)
-          if (a.is_online !== b.is_online) {
-            return b.is_online ? 1 : -1;
-          }
-          // Then by last_seen (most recent first)
-          // last_seen is a number (timestamp) from the API
-          const aTime = typeof a.last_seen === 'number' ? a.last_seen : (typeof a.last_seen === 'string' ? new Date(a.last_seen).getTime() : 0);
-          const bTime = typeof b.last_seen === 'number' ? b.last_seen : (typeof b.last_seen === 'string' ? new Date(b.last_seen).getTime() : 0);
-          return bTime - aTime;
-        });
-        setDevices(sortedDevices);
-        setError(null);
+        const sortedDevices = sortDevices(allDevices);
+        if (isActive) {
+          setDevices(sortedDevices);
+          setError(null);
+        }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
+        if (isActive) {
+          setError(err instanceof Error ? err.message : 'Unknown error');
+        }
       } finally {
-        setLoading(false);
+        if (isActive) {
+          setLoading(false);
+        }
       }
     }
 
     fetchDevices();
 
-    // Poll every 10 seconds for presence updates
+    // Use polling only when WebSocket presence is unavailable
+    if (isConnected) {
+      return () => {
+        isActive = false;
+      };
+    }
+
     const interval = setInterval(fetchDevices, 10000);
 
-    return () => clearInterval(interval);
-  }, [apiUrl, userId]);
+    return () => {
+      isActive = false;
+      clearInterval(interval);
+    };
+  }, [apiUrl, userId, isConnected]);
+
+  useEffect(() => {
+    if (!lastSystemMessage || lastSystemMessage.type !== 'device_status_changed') {
+      return;
+    }
+
+    if (lastSystemMessage.user_id && lastSystemMessage.user_id !== userId) {
+      return;
+    }
+
+    setDevices(prev => {
+      const updated = [...prev];
+      const idx = updated.findIndex(d => d.device_id === lastSystemMessage.device_id);
+      const lastSeen = lastSystemMessage.timestamp || Date.now();
+      const baseDevice: DevicePresence = {
+        device_id: lastSystemMessage.device_id,
+        device_name: lastSystemMessage.device_name || 'Unknown Device',
+        device_type: lastSystemMessage.device_type || 'web',
+        is_current: lastSystemMessage.device_id === deviceId,
+        last_seen: lastSeen.toString(),
+        created_at: new Date(lastSeen).toISOString(),
+        is_online: lastSystemMessage.is_online,
+      };
+
+      if (idx >= 0) {
+        updated[idx] = {
+          ...updated[idx],
+          is_online: lastSystemMessage.is_online,
+          last_seen: lastSeen.toString(),
+          device_name: lastSystemMessage.device_name || updated[idx].device_name,
+          device_type: lastSystemMessage.device_type || updated[idx].device_type,
+        };
+      } else {
+        updated.push(baseDevice);
+      }
+
+      return sortDevices(updated);
+    });
+  }, [lastSystemMessage, deviceId, userId]);
 
   if (loading) {
     return (

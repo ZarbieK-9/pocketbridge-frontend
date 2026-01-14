@@ -10,7 +10,7 @@
 import { useEffect, useState, useLayoutEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useCrypto } from '@/hooks/use-crypto';
-import { hasCompletedOnboarding, loadUserProfile } from '@/lib/utils/user-profile';
+import { getOrCreateUserProfile } from '@/lib/utils/user-profile';
 import { logger } from '@/lib/utils/logger';
 
 interface OnboardingGuardProps {
@@ -59,26 +59,39 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
       return;
     }
 
-    // Check onboarding status
-    const completed = hasCompletedOnboarding(identityKeyPair.publicKeyHex);
-    
-    if (!completed && !hasRedirected) {
-      logger.info('Onboarding not completed, redirecting to onboarding page');
-      setHasRedirected(true);
-      router.push('/onboarding');
-      return;
-    }
+    let cancelled = false;
 
-    // Restore user profile
-    const profile = loadUserProfile();
-    if (profile && profile.userId === identityKeyPair.publicKeyHex) {
-      logger.info('User profile restored', {
-        userId: profile.userId.substring(0, 16) + '...',
-        displayName: profile.displayName,
-      });
-    }
+    const verifyOnboarding = async () => {
+      try {
+        const profile = await getOrCreateUserProfile(identityKeyPair);
+        if (!profile.onboardingCompleted && !hasRedirected) {
+          logger.info('Onboarding not completed (server-sourced), redirecting to onboarding page');
+          setHasRedirected(true);
+          setIsChecking(false);
+          router.push('/onboarding');
+          return;
+        }
 
-    setIsChecking(false);
+        logger.info('User profile restored', {
+          userId: profile.userId.substring(0, 16) + '...',
+          displayName: profile.displayName,
+          onboardingCompleted: profile.onboardingCompleted,
+        });
+      } catch (error) {
+        logger.warn('Failed to resolve onboarding status', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        if (!cancelled) {
+          setIsChecking(false);
+        }
+      }
+    };
+
+    verifyOnboarding();
+    return () => {
+      cancelled = true;
+    };
   }, [cryptoState, pathname, router, hasRedirected, isClient]);
 
   // CRITICAL: Always render children on first render (SSR and initial client render)

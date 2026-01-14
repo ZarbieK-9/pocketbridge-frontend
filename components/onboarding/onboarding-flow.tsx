@@ -121,33 +121,6 @@ export function OnboardingFlow({ userId, currentDeviceName, onComplete }: Onboar
       logger.error('Failed to complete onboarding', error);
       const errorMessage = error instanceof Error ? error.message : 'Failed to complete onboarding';
       setCompletionError(errorMessage);
-      
-      // Still complete locally even if server sync fails
-      const existing = loadUserProfile();
-      if (existing) {
-        existing.onboardingCompleted = true;
-        saveUserProfile(existing);
-      } else {
-        const newProfile: UserProfile = {
-          userId,
-          createdAt: Date.now(),
-          lastSeen: Date.now(),
-          onboardingCompleted: true,
-          preferences: {
-            theme: 'auto',
-            notifications: true,
-            autoSync: true,
-          },
-          ...(displayName && displayName.trim() ? { displayName: displayName.trim() } : {}),
-        };
-        saveUserProfile(newProfile);
-      }
-      
-      // Show success even if server sync failed (local save succeeded)
-      setStep('complete');
-      setTimeout(() => {
-        onComplete();
-      }, 2000);
     } finally {
       setIsCompleting(false);
     }

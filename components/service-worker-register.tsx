@@ -45,17 +45,41 @@ export function ServiceWorkerRegister() {
         })
 
         // Handle service worker messages
-        navigator.serviceWorker.addEventListener('message', (event) => {
-          console.log('[SW] Message from service worker:', event.data)
+        navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
+          const controller = navigator.serviceWorker.controller
+
+          if (!event.isTrusted) {
+            console.warn('[SW] Ignoring untrusted message event')
+            return
+          }
+
+          const origin = event.origin || (event.source instanceof ServiceWorker ? new URL(event.source.scriptURL).origin : null)
+          if (origin !== window.location.origin) {
+            console.warn('[SW] Ignoring message from untrusted origin', origin)
+            return
+          }
+
+          if (!controller || event.source !== controller) {
+            console.warn('[SW] Ignoring message from unexpected source')
+            return
+          }
+
+          const data = event.data
+          if (!data || typeof data !== 'object') {
+            console.warn('[SW] Ignoring message with invalid payload')
+            return
+          }
+
+          console.log('[SW] Message from service worker:', data)
           
-          if (event.data.type === 'SYNC_QUEUED_EVENTS') {
+          if (data.type === 'SYNC_QUEUED_EVENTS') {
             // Trigger sync in the app
             window.dispatchEvent(new CustomEvent('sw-sync-request', {
-              detail: { count: event.data.count },
+              detail: { count: data.count },
             }))
           }
           
-          if (event.data.type === 'CHECK_UPDATES') {
+          if (data.type === 'CHECK_UPDATES') {
             // Check for updates
             window.dispatchEvent(new CustomEvent('sw-check-updates'))
           }

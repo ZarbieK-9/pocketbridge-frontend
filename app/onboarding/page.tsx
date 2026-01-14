@@ -11,7 +11,7 @@ import { useRouter } from 'next/navigation';
 import { OnboardingFlow } from '@/components/onboarding/onboarding-flow';
 import { useCrypto } from '@/hooks/use-crypto';
 import { getOrCreateDeviceName } from '@/lib/utils/device';
-import { loadUserProfile } from '@/lib/utils/user-profile';
+import { getOrCreateUserProfile } from '@/lib/utils/user-profile';
 import { logger } from '@/lib/utils/logger';
 
 export default function OnboardingPage() {
@@ -41,15 +41,29 @@ export default function OnboardingPage() {
       return;
     }
 
-    // Check if user has already completed onboarding
-    const profile = loadUserProfile();
-    if (profile && profile.userId === identityKeyPair.publicKeyHex && profile.onboardingCompleted) {
-      // Already completed, redirect to dashboard
-      router.push('/');
-      return;
-    }
+    let cancelled = false;
+    const resolveProfile = async () => {
+      try {
+        const profile = await getOrCreateUserProfile(identityKeyPair);
+        if (profile && profile.onboardingCompleted) {
+          router.push('/');
+          return;
+        }
+      } catch (error) {
+        logger.warn('Failed to resolve onboarding status from server', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
+    };
 
-    setIsLoading(false);
+    resolveProfile();
+    return () => {
+      cancelled = true;
+    };
   }, [isInitialized, identityKeyPair, cryptoError, router]);
 
   const handleComplete = () => {

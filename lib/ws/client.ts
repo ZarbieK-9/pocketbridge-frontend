@@ -13,7 +13,7 @@
  * - Offline queue sync
  */
 
-import { WS_RECONNECT_DELAY, WS_HEARTBEAT_INTERVAL } from '@/lib/constants';
+import { WS_RECONNECT_DELAY, WS_HEARTBEAT_INTERVAL, STORAGE_KEYS } from '@/lib/constants';
 import { getEventQueue } from '@/lib/sync';
 import {
   generateECDHKeyPair,
@@ -22,6 +22,7 @@ import {
 } from '@/lib/crypto/ecdh';
 import {
   signEd25519,
+  verifyEd25519,
   loadIdentityKeyPair,
 } from '@/lib/crypto/keys';
 import { generateHandshakeNonce } from '@/lib/crypto/nonce';
@@ -41,11 +42,13 @@ import type {
   FullResyncRequired,
   SessionKeys,
   Ed25519KeyPair,
+  SystemMessage,
 } from '@/types';
 
 type EventHandler = (event: EncryptedEvent) => void;
 type StatusHandler = (status: ConnectionStatus) => void;
 type ErrorHandler = (error: Error) => void;
+type SystemHandler = (message: SystemMessage) => void;
 
 interface HandshakeState {
   clientEphemeralKeyPair?: Awaited<ReturnType<typeof generateECDHKeyPair>>;
@@ -69,6 +72,7 @@ export class WebSocketClient {
   private eventHandlers: EventHandler[] = [];
   private statusHandlers: StatusHandler[] = [];
   private errorHandlers: ErrorHandler[] = [];
+    private systemHandlers: SystemHandler[] = [];
   private deviceId: string;
   private userId: string | null = null; // Ed25519 public key (hex)
   private identityKeyPair: Ed25519KeyPair | null = null;
@@ -263,8 +267,7 @@ export class WebSocketClient {
       this.handshakeState.nonceS = message.nonce_s;
 
 
-    // Verify server signature
-    // Server signs: SHA256(server_identity_pub || server_ephemeral_pub || nonce_c || nonce_s)
+    // Verify server signature and pin server identity (TOFU with change detection)
     const signatureData = await this.hashForSignature(
       message.server_identity_pub,
       message.server_ephemeral_pub,
@@ -272,10 +275,36 @@ export class WebSocketClient {
       message.nonce_s
     );
 
-    // Note: Server signature verification is intentionally deferred for Phase 1
-    // We use Trust-On-First-Use (TOFU) model - trust the server on first connection
-    // In production, you would verify: await verifyEd25519(message.server_signature, signatureData, message.server_identity_pub)
-    // This requires implementing verifyEd25519 in the client crypto utilities
+    const signatureBytes = this.hexToBytes(message.server_signature);
+    const serverIdentityBytes = this.hexToBytes(message.server_identity_pub);
+
+    const pinnedKey = this.getPinnedServerKey();
+    if (pinnedKey && pinnedKey !== message.server_identity_pub) {
+      const error = new Error('Server identity key changed - refusing connection');
+      logger.error('Server identity key mismatch', {
+        pinnedKey: pinnedKey.substring(0, 16) + '...',
+        receivedKey: message.server_identity_pub.substring(0, 16) + '...',
+      });
+      this.handleError(error);
+      this.disconnect();
+      return;
+    }
+
+    const isValidSignature = await verifyEd25519(signatureBytes, signatureData, serverIdentityBytes);
+    if (!isValidSignature) {
+      const error = new Error('Server signature verification failed');
+      logger.error('Server signature verification failed');
+      this.handleError(error);
+      this.disconnect();
+      return;
+    }
+
+    if (!pinnedKey) {
+      this.pinServerKey(message.server_identity_pub);
+      logger.info('Pinned server identity key (TOFU)', {
+        serverKey: message.server_identity_pub.substring(0, 16) + '...',
+      });
+    }
 
     // Compute shared secret
     const sharedSecret = await computeECDHSecret(
@@ -433,6 +462,28 @@ export class WebSocketClient {
     }
     // Hash the concatenated result (equivalent to backend's incremental hash.update)
     return new Uint8Array(await crypto.subtle.digest('SHA-256', result));
+  }
+
+  private hexToBytes(hex: string): Uint8Array {
+    const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+    const pairs = clean.match(/.{1,2}/g) || [];
+    return new Uint8Array(pairs.map((byte) => parseInt(byte, 16)));
+  }
+
+  private getPinnedServerKey(): string | null {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem(STORAGE_KEYS.SERVER_IDENTITY_KEY);
+  }
+
+  private pinServerKey(serverKey: string): void {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(STORAGE_KEYS.SERVER_IDENTITY_KEY, serverKey);
+    } catch (error) {
+      logger.warn('Failed to persist pinned server identity key', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -622,6 +673,10 @@ export class WebSocketClient {
           break;
         case 'ack':
           this.handleAck(message.payload as { device_seq: number });
+          break;
+        case 'device_status_changed':
+        case 'device_presence':
+          this.emitSystem((message.payload || message) as SystemMessage);
           break;
         case 'error':
           logger.error('Server error', undefined, { payload: message.payload });
@@ -977,6 +1032,16 @@ export class WebSocketClient {
     });
   }
 
+  private emitSystem(message: SystemMessage): void {
+    this.systemHandlers.forEach(handler => {
+      try {
+        handler(message);
+      } catch (error) {
+        logger.error('System handler error', error);
+      }
+    });
+  }
+
   /**
    * Register event handler
    */
@@ -1001,6 +1066,13 @@ export class WebSocketClient {
     }
     return () => {
       this.statusHandlers = this.statusHandlers.filter(h => h !== handler);
+    };
+  }
+
+  onSystem(handler: SystemHandler): () => void {
+    this.systemHandlers.push(handler);
+    return () => {
+      this.systemHandlers = this.systemHandlers.filter(h => h !== handler);
     };
   }
 

@@ -27,6 +27,7 @@ export const STORAGE_KEYS = {
   IDENTITY_KEYPAIR: "pocketbridge_identity_keypair",
   SYMMETRIC_KEY: "pocketbridge_symmetric_key",
   LAST_ACK_SEQ: "pocketbridge_last_ack_seq",
+  SERVER_IDENTITY_KEY: "pocketbridge_server_identity_key",
 } as const
 
 // IndexedDB configuration

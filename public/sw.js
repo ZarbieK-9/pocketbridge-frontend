@@ -109,25 +109,50 @@ self.addEventListener('periodicsync', (event) => {
 
 // Message event - handle messages from the app
 self.addEventListener('message', (event) => {
-  console.log('[SW] Message received:', event.data);
+  const sourceUrl = event.source && event.source.url;
+  const sourceOrigin = sourceUrl ? new URL(sourceUrl).origin : null;
+
+  if (!event.isTrusted) {
+    console.warn('[SW] Ignoring untrusted message event');
+    return;
+  }
+
+  const origin = event.origin || sourceOrigin;
+  if (origin !== self.location.origin) {
+    console.warn('[SW] Ignoring message from untrusted origin', origin);
+    return;
+  }
+
+  if (!sourceOrigin || sourceOrigin !== self.location.origin) {
+    console.warn('[SW] Ignoring message from unexpected source', sourceOrigin);
+    return;
+  }
+
+  const data = event.data;
+  if (!data || typeof data !== 'object') {
+    console.warn('[SW] Ignoring message with invalid payload');
+    return;
+  }
+
+  console.log('[SW] Message received:', data);
   
-  if (event.data && event.data.type === 'SKIP_WAITING') {
+  if (data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
   
-  if (event.data && event.data.type === 'QUEUE_EVENT') {
+  if (data.type === 'QUEUE_EVENT') {
     // Queue event for background sync
-    queueEvent(event.data.event);
+    queueEvent(data.event);
   }
   
-  if (event.data && event.data.type === 'SYNC_NOW') {
+  if (data.type === 'SYNC_NOW') {
     // Trigger immediate sync
     event.waitUntil(syncEvents());
   }
   
-  if (event.data && event.data.type === 'CLIPBOARD_UPDATE') {
+  if (data.type === 'CLIPBOARD_UPDATE') {
     // Handle clipboard update in background
-    handleClipboardUpdate(event.data.text);
+    handleClipboardUpdate(data.text);
   }
 });
 

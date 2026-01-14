@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getWebSocketClient } from '@/lib/ws';
 import { useCrypto } from '@/hooks/use-crypto';
-import type { ConnectionStatus, EncryptedEvent, SessionKeys } from '@/types';
+import type { ConnectionStatus, EncryptedEvent, SessionKeys, SystemMessage } from '@/types';
 
 interface UseWebSocketOptions {
   url: string;
@@ -27,6 +27,7 @@ export function useWebSocket({
   const logPrefix = '[useWebSocket]';
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const [lastEvent, setLastEvent] = useState<EncryptedEvent | null>(null);
+  const [lastSystemMessage, setLastSystemMessage] = useState<SystemMessage | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [sessionKeys, setSessionKeys] = useState<SessionKeys | null>(null);
   
@@ -107,6 +108,9 @@ export function useWebSocket({
     const unsubEvent = client.onEvent((event) => {
       setLastEvent(event);
     });
+    const unsubSystem = client.onSystem((message) => {
+      setLastSystemMessage(message);
+    });
     const unsubError = client.onError((err) => {
       console.error(logPrefix, 'client error', err);
       setError(err);
@@ -126,6 +130,7 @@ export function useWebSocket({
     return () => {
       unsubStatus();
       unsubEvent();
+      unsubSystem();
       unsubError();
     };
   }, [url, deviceId, autoConnect, connect, waitForCrypto, cryptoInitialized]);
@@ -140,5 +145,6 @@ export function useWebSocket({
     sendEvent,
     syncPending,
     isConnected: status === 'connected',
+    lastSystemMessage,
   };
 }
