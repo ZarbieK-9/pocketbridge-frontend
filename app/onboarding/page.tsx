@@ -19,9 +19,16 @@ export default function OnboardingPage() {
   const router = useRouter();
   const { identityKeyPair, isInitialized, error: cryptoError } = useCrypto();
   const [isLoading, setIsLoading] = useState(true);
+  const [isMounted, setIsMounted] = useState(false);
+  const [deviceName, setDeviceName] = useState<string>('');
   
-  // Call this unconditionally (before any early returns) to avoid hook order issues
-  const deviceName = getOrCreateDeviceName();
+  // Only call getOrCreateDeviceName on client to avoid hydration issues
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      setIsMounted(true);
+      setDeviceName(getOrCreateDeviceName());
+    }
+  }, []);
 
   // Check onboarding status and handle redirects
   useEffect(() => {
@@ -70,7 +77,8 @@ export default function OnboardingPage() {
     router.push('/');
   };
 
-  if (isLoading || !isInitialized || !identityKeyPair) {
+  // Prevent hydration mismatch by not rendering until mounted
+  if (!isMounted || isLoading || !isInitialized || !identityKeyPair) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center space-y-4">

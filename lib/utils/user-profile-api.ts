@@ -168,14 +168,42 @@ export async function updateUserProfileOnServer(
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(errorData.error || `Failed to update profile: ${response.statusText}`);
+      const errorData = await response.json().catch(() => ({
+        error: `HTTP ${response.status}: ${response.statusText}`,
+        code: 'HTTP_ERROR',
+      }));
+      const errorMessage = errorData.error || errorData.message || `Failed to update profile: ${response.statusText}`;
+      const errorCode = errorData.code || 'UPDATE_FAILED';
+      
+      logger.error('Failed to update user profile on server', {
+        error: errorMessage,
+        code: errorCode,
+        status: response.status,
+        statusText: response.statusText,
+      });
+      
+      throw new Error(errorMessage);
     }
 
     const data = await response.json();
     return data.profile as ServerUserProfile;
   } catch (error) {
-    logger.error('Failed to update user profile on server', error);
+    // Network errors are expected when offline
+    const isNetworkError = error instanceof TypeError &&
+      (error.message.includes('fetch') || 
+       error.message.includes('NetworkError') ||
+       error.message.includes('Failed to fetch'));
+    
+    if (isNetworkError) {
+      logger.debug('Network error updating profile, using local cache', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } else {
+      logger.error('Failed to update user profile on server', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    
     throw error;
   }
 }
@@ -221,13 +249,41 @@ export async function markOnboardingCompleteOnServer(userId: string): Promise<bo
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(errorData.error || `Failed to mark onboarding complete: ${response.statusText}`);
+      const errorData = await response.json().catch(() => ({
+        error: `HTTP ${response.status}: ${response.statusText}`,
+        code: 'HTTP_ERROR',
+      }));
+      const errorMessage = errorData.error || errorData.message || `Failed to mark onboarding complete: ${response.statusText}`;
+      const errorCode = errorData.code || 'ONBOARDING_FAILED';
+      
+      logger.error('Failed to mark onboarding complete on server', {
+        error: errorMessage,
+        code: errorCode,
+        status: response.status,
+        statusText: response.statusText,
+      });
+      
+      throw new Error(errorMessage);
     }
 
     return true;
   } catch (error) {
-    logger.error('Failed to mark onboarding complete on server', error);
+    // Network errors are expected when offline
+    const isNetworkError = error instanceof TypeError &&
+      (error.message.includes('fetch') || 
+       error.message.includes('NetworkError') ||
+       error.message.includes('Failed to fetch'));
+    
+    if (isNetworkError) {
+      logger.debug('Network error marking onboarding complete, using local cache', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } else {
+      logger.error('Failed to mark onboarding complete on server', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    
     throw error;
   }
 }

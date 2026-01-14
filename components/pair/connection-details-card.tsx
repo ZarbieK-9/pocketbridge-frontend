@@ -24,9 +24,10 @@ export function ConnectionDetailsCard({
   isConnected,
   connectionError,
 }: ConnectionDetailsCardProps) {
-  // Use useState to avoid hydration mismatches - only get values on client
-  const [displayDeviceName, setDisplayDeviceName] = useState<string>('Loading...');
-  const [displayWsUrl, setDisplayWsUrl] = useState<string>('Loading...');
+  // Use useState to avoid hydration mismatches - only render on client
+  const [isMounted, setIsMounted] = useState(false);
+  const [displayDeviceName, setDisplayDeviceName] = useState<string>('');
+  const [displayWsUrl, setDisplayWsUrl] = useState<string>('');
   
   const getErrorMessage = (err: any): string => {
     if (typeof err === 'string') return err;
@@ -37,11 +38,17 @@ export function ConnectionDetailsCard({
   };
   
   useEffect(() => {
+    setIsMounted(true);
     if (typeof window !== 'undefined') {
       setDisplayDeviceName(deviceName || getOrCreateDeviceName() || 'Unknown Device');
       setDisplayWsUrl(wsUrl || getWsUrl() || config.wsUrl || 'Not configured');
     }
   }, [deviceName, wsUrl]);
+  
+  // Prevent hydration mismatch by not rendering during SSR
+  if (!isMounted) {
+    return null;
+  }
 
   const getStatusBadge = () => {
     if (isConnected) return 'online';
