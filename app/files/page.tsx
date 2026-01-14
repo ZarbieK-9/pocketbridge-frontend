@@ -78,7 +78,7 @@ export default function FilesPage() {
     const rateLimit = checkRateLimit(`file:${deviceId}`, 'fileUpload');
     if (!rateLimit.allowed) {
       const resetIn = Math.ceil((rateLimit.resetAt - Date.now()) / 1000 / 60);
-      alert(`Rate limit exceeded. Please wait ${resetIn} minutes before uploading another file.`);
+      toast(`Rate limit exceeded. Please wait ${resetIn} minutes before uploading another file.`, 'error');
       return;
     }
 
@@ -116,9 +116,9 @@ export default function FilesPage() {
     } catch (error) {
       logger.error('Failed to upload file', error);
       if (error instanceof ValidationError) {
-        alert(error.message);
+        toast(error.message, 'error');
       } else {
-        alert('Failed to upload file. Please try again.');
+        toast('Failed to upload file. Please try again.', 'error');
       }
     }
   }

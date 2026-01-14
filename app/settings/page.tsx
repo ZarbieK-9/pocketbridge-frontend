@@ -185,8 +185,8 @@ export default function SettingsPage() {
         {sessionExpiresAt && (
         <SessionTimeout 
           expiresAt={sessionExpiresAt}
-          onRefresh={() => console.log('Refresh session')}
-          onExpired={() => console.log('Session expired')}
+          onRefresh={() => logger.info('Session refresh requested')}
+          onExpired={() => logger.warn('Session expired')}
         />)}
 
         {/* Connected Devices */}

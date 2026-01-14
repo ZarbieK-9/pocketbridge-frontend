@@ -11,6 +11,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { useCrypto } from '@/hooks/use-crypto';
+import { logger } from '@/lib/utils/logger';
 import {
   initYjsDoc,
   getYjsText,
@@ -81,7 +82,7 @@ export default function ScratchpadPage() {
             setLastSaved(new Date());
             setSyncStatus('synced');
           } catch (error) {
-            console.error('[Scratchpad] Failed to send Yjs update:', error);
+            logger.error('[Scratchpad] Failed to send Yjs update:', error);
             setSyncStatus('error');
           }
         });
@@ -130,7 +131,7 @@ export default function ScratchpadPage() {
       const loadedText = await rebuildYjsFromEvents();
       setText(loadedText);
     } catch (error) {
-      console.error('[Scratchpad] Failed to load:', error);
+      logger.error('[Scratchpad] Failed to load:', error);
     } finally {
       setIsLoading(false);
     }
@@ -146,7 +147,7 @@ export default function ScratchpadPage() {
         // Text will update via Yjs observer
       }
     } catch (error) {
-      console.error('[Scratchpad] Failed to apply update:', error);
+      logger.error('[Scratchpad] Failed to apply update:', error);
       setSyncStatus('error');
     }
   }

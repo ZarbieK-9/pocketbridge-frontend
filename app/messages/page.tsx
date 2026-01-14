@@ -102,7 +102,7 @@ export default function MessagesPage() {
     const rateLimit = checkRateLimit(`message:${deviceId}`, 'messageSend');
     if (!rateLimit.allowed) {
       const resetIn = Math.ceil((rateLimit.resetAt - Date.now()) / 1000);
-      alert(`Rate limit exceeded. Please wait ${resetIn} seconds before sending another message.`);
+      toast(`Rate limit exceeded. Please wait ${resetIn} seconds before sending another message.`, 'error');
       return;
     }
 
@@ -123,9 +123,9 @@ export default function MessagesPage() {
     } catch (error) {
       logger.error('Failed to send message', error);
       if (error instanceof ValidationError) {
-        alert(error.message);
+        toast(error.message, 'error');
       } else {
-        alert('Failed to send message. Please try again.');
+        toast('Failed to send message. Please try again.', 'error');
       }
     } finally {
       setIsSending(false);

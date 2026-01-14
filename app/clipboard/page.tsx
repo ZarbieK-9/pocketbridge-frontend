@@ -12,6 +12,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { useCrypto } from '@/hooks/use-crypto';
+import { logger } from '@/lib/utils/logger';
 import { SyncIndicator } from '@/components/sync-indicator';
 import { toast } from '@/components/ui/toast';
 import { useBackgroundClipboard } from '@/hooks/use-background-clipboard';
@@ -74,8 +75,8 @@ export default function ClipboardPage() {
       const text = await navigator.clipboard.readText();
       setClipboardText(text);
     } catch (error) {
-      console.error('Failed to read clipboard:', error);
-      alert('Clipboard access denied. Please grant clipboard-read permission.');
+      logger.error('Failed to read clipboard:', error);
+      toast('Clipboard access denied. Please grant clipboard-read permission.', 'error');
     }
   }
 
@@ -85,7 +86,8 @@ export default function ClipboardPage() {
     try {
       await navigator.clipboard.writeText(clipboardText);
     } catch (error) {
-      console.error('Failed to write clipboard:', error);
+      logger.error('Failed to write clipboard:', error);
+      toast('Failed to copy to clipboard', 'error');
     }
   }
 
