@@ -91,13 +91,18 @@ export async function sendYjsUpdate(
     type: 'yjs_update',
   };
 
-  return await createEvent(
+  const event = await createEvent(
     SCRATCHPAD_STREAM_ID,
     deviceId,
     'scratchpad:op',
     payload,
     userId,
   );
+
+  // Sync immediately to send the event over WebSocket
+  await wsClient.syncPending();
+
+  return event;
 }
 
 /**

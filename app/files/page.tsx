@@ -57,6 +57,9 @@ export default function FilesPage() {
   const [syncStatus, setSyncStatus] = useState<'idle' | 'sending' | 'synced' | 'error'>('idle');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Buffer for chunks that arrive before their metadata (out-of-order handling)
+  const orphanedChunksRef = useRef<Map<string, any[]>>(new Map());
+
   // Handle incoming file events (skip self-originated events)
   useEffect(() => {
     // DEBUG: Log all incoming events for tracing (only file events to reduce noise)
@@ -247,6 +250,17 @@ export default function FilesPage() {
           status: 'uploading', // Will change to downloading
         };
         setTransfers(prev => [...prev, transfer]);
+
+        // Process any orphaned chunks that arrived before metadata
+        const orphanedChunks = orphanedChunksRef.current.get(metadata.file_id);
+        if (orphanedChunks && orphanedChunks.length > 0) {
+          console.log('[FILES PAGE] Processing', orphanedChunks.length, 'buffered chunks for file:', metadata.file_id);
+          orphanedChunksRef.current.delete(metadata.file_id);
+          // Process each buffered chunk
+          for (const chunkEvent of orphanedChunks) {
+            handleIncomingFileChunk(chunkEvent);
+          }
+        }
       }
     } catch (error) {
       logger.error('Failed to handle incoming file metadata', error);
@@ -275,7 +289,11 @@ export default function FilesPage() {
       
       const fileInfo = incomingFiles.get(fileId);
       if (!fileInfo) {
-        logger.error('Received chunk for unknown file', undefined, { fileId });
+        // Buffer chunk for later - metadata may arrive after chunks due to network reordering
+        console.log('[FILES PAGE] Buffering orphaned chunk for file:', fileId, 'chunk:', payload.chunk_index);
+        const orphanedChunks = orphanedChunksRef.current.get(fileId) || [];
+        orphanedChunks.push(event);
+        orphanedChunksRef.current.set(fileId, orphanedChunks);
         return;
       }
 
