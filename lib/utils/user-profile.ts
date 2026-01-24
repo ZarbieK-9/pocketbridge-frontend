@@ -199,7 +199,9 @@ export async function updateUserProfile(
     await updateUserProfileOnServer(validUpdates, userId);
     logger.info('User profile synced to server', { userId: userId.substring(0, 16) + '...' });
   } catch (error) {
-    logger.error('Failed to sync profile to server', error);
+    logger.error('Failed to sync profile to server', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     // Non-blocking: local update still succeeds
   }
 }

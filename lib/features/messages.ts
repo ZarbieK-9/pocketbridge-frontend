@@ -12,6 +12,7 @@ import { decryptPayload } from '@/lib/crypto/encryption';
 import { getEventsByStream } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
+import { getWebSocketClient } from '@/lib/ws';
 import type { EncryptedEvent, MessageSelfDestructPayload } from '@/types';
 
 const MESSAGES_STREAM_ID = 'messages:main';
@@ -24,6 +25,8 @@ export async function sendSelfDestructMessage(
   ttlSeconds: number,
 ): Promise<EncryptedEvent> {
   const deviceId = getOrCreateDeviceId();
+  const wsClient = getWebSocketClient();
+  const userId = wsClient.getUserId() || undefined;
   const expiresAt = Date.now() + ttlSeconds * 1000;
   
   const payload: MessageSelfDestructPayload = {
@@ -36,6 +39,7 @@ export async function sendSelfDestructMessage(
     deviceId,
     'message:self_destruct',
     payload,
+    userId,
   );
 
   // Set TTL on event metadata

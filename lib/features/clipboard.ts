@@ -13,6 +13,7 @@ import { getEventsByStream } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
 import { loadIdentityKeyPair } from '@/lib/crypto/keys';
+import { getWebSocketClient } from '@/lib/ws';
 import type { EncryptedEvent, ClipboardTextPayload } from '@/types';
 
 const CLIPBOARD_STREAM_ID = 'clipboard:main';
@@ -24,6 +25,8 @@ export async function sendClipboardText(
   text: string,
 ): Promise<EncryptedEvent> {
   const deviceId = getOrCreateDeviceId();
+  const wsClient = getWebSocketClient();
+  const userId = wsClient.getUserId() || undefined;
   
   const payload: ClipboardTextPayload = {
     text,
@@ -35,6 +38,7 @@ export async function sendClipboardText(
     deviceId,
     'clipboard:text',
     payload,
+    userId,
   );
 }
 

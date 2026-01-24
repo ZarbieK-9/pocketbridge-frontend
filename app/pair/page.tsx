@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { CheckCircle2, XCircle, KeyRound, Copy, Check, QrCode } from 'lucide-react';
 import { parsePairingCode, generatePairingCode, type PairingData } from '@/lib/utils/pairing-code';
 import { getBackendApiUrl } from '@/lib/utils/pairing-code';
-import { setWsUrl, getWsUrl } from '@/lib/utils/storage';
+import { setWsUrl, getWsUrl, savePairedAccount } from '@/lib/utils/storage';
 import { getOrCreateDeviceId, getOrCreateDeviceName, updateDeviceName } from '@/lib/utils/device';
 import { useRouter } from 'next/navigation';
 import { useCrypto } from '@/hooks/use-crypto';
@@ -54,7 +54,7 @@ export default function PairPage() {
   const deviceId = getOrCreateDeviceId();
 
   // WebSocket connection status
-  const { status: connectionStatus, isConnected, error: connectionError } = useWebSocket({
+  const { status: connectionStatus, isConnected, error: connectionError, lastSystemMessage } = useWebSocket({
     url: wsUrl,
     deviceId,
     autoConnect: isInitialized && !!wsUrl && wsUrl !== 'Not configured',
@@ -267,25 +267,61 @@ export default function PairPage() {
 
       setPairingData(data);
       
-      // Check if identity keypair was saved and changed (means we switched accounts)
-      // If the pairing data has a different keypair than what's in memory, we need to reload
+      // Store pairing code in sessionStorage for completing pairing after WebSocket connects
+      // This is needed because the WebSocket handshake must complete before we can send complete_pairing
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('pending_pairing_code', validatedCode);
+      }
+      
+      // If identity keypair is different, save the new one FIRST before proceeding
+      // This ensures we use Device A's identity for the complete_pairing message
       if (identityKeyPair && identityKeyPair.publicKeyHex !== data.publicKeyHex) {
-        logger.info('Identity keypair changed, reloading page to re-initialize crypto', {
+        logger.info('[PAIRING] Identity keypair different, saving Device A identity before pairing', {
           oldKeypair: identityKeyPair.publicKeyHex.substring(0, 16) + '...',
           newKeypair: data.publicKeyHex.substring(0, 16) + '...',
+          fullOldKeypair: identityKeyPair.publicKeyHex,
+          fullNewKeypair: data.publicKeyHex,
         });
-        // Save WebSocket URL before reload
-        setWsUrl(data.wsUrl);
-        // Small delay to show success message
-        setTimeout(() => {
-          window.location.reload();
-        }, 500);
-        return;
+        console.log('[PAIRING] IDENTITY CHANGE DETECTED:', {
+          from: identityKeyPair.publicKeyHex,
+          to: data.publicKeyHex,
+        });
+
+        // Save Device A's identity keypair NOW
+        try {
+          const { saveIdentityKeyPair } = await import('@/lib/crypto/keys');
+          const keypair = {
+            publicKey: new Uint8Array(
+              data.publicKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
+            ),
+            privateKey: new Uint8Array(
+              data.privateKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
+            ),
+            publicKeyHex: data.publicKeyHex,
+            privateKeyHex: data.privateKeyHex,
+          };
+          saveIdentityKeyPair(keypair);
+          logger.info('[PAIRING] Device A identity keypair saved, reloading to re-initialize');
+
+          // Save WebSocket URL and pairing code before reload
+          setWsUrl(data.wsUrl);
+          sessionStorage.setItem('pending_pairing_code', validatedCode);
+
+          // Reload to pick up new identity - the reloaded page will complete pairing
+          setTimeout(() => {
+            window.location.reload();
+          }, 300);
+          return;
+        } catch (err) {
+          logger.error('[PAIRING] Failed to save identity keypair', err);
+          // Continue anyway - will try again after pairing_completed
+        }
       }
       
       setWsUrl(data.wsUrl); // Save to localStorage
       
-      // Validate and save device name
+      // Store device name to save after pairing completes
+      // (Don't update now - device isn't properly linked until after pairing)
       try {
         const validatedName = validateDeviceName(newDeviceName);
         updateDeviceName(validatedName);
@@ -298,98 +334,38 @@ export default function PairPage() {
       
       setWsUrlState(data.wsUrl); // Update state
       setPairingStep('connecting');
-      
+
       setResult({
         success: true,
-        message: `Successfully paired with ${data.deviceName || 'device'}. Connecting...`,
+        message: `Successfully retrieved pairing data. Connecting...`,
       });
 
-      logger.info('Device paired successfully', { deviceName: data.deviceName });
+      logger.info('Pairing code parsed successfully', { deviceName: data.deviceName });
 
-      // Mark onboarding as completed after successful pairing
-      if (identityKeyPair) {
-        const { completeOnboarding } = await import('@/lib/utils/user-profile');
+      // Note: Device name will be updated on backend after pairing completes in the pairing_completed handler
+      // This is necessary because the device belongs to Device A until pairing is complete
+
+      // If WebSocket is already connected, send complete_pairing immediately
+      // Otherwise, the effect will handle it when connection establishes
+      if (isConnected) {
+        logger.info('[Pairing] WebSocket already connected, sending complete_pairing immediately');
         try {
-          await completeOnboarding(identityKeyPair.publicKeyHex);
-        } catch (error) {
-          logger.warn('Failed to mark onboarding complete after pairing', {
-            error: error instanceof Error ? error.message : String(error),
+          const { getWebSocketClient } = await import('@/lib/ws');
+          const client = getWebSocketClient(data.wsUrl, deviceId);
+          client.completePairing(validatedCode);
+          // Clear the pending code since we're sending it now
+          sessionStorage.removeItem('pending_pairing_code');
+          setResult({
+            success: true,
+            message: 'Pairing in progress... Please wait for confirmation.',
           });
+        } catch (err) {
+          logger.error('[Pairing] Failed to send complete_pairing', err);
+          throw err;
         }
+      } else {
+        logger.info('[Pairing] WebSocket not connected yet, will send complete_pairing when connected');
       }
-
-      // Update device name on backend after pairing (non-blocking)
-      const updateDeviceNameOnBackend = async () => {
-        try {
-          const validatedName = validateDeviceName(newDeviceName);
-          const apiUrl = getBackendApiUrl();
-          const userId = identityKeyPair?.publicKeyHex;
-          
-          if (!userId || !deviceId) {
-            logger.warn('Cannot update device name: missing userId or deviceId');
-            return;
-          }
-          
-          const response = await fetch(`${apiUrl}/api/devices/${deviceId}/rename`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-User-ID': userId,
-            },
-            body: JSON.stringify({ device_name: validatedName }),
-          });
-          
-          if (!response.ok) {
-            const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-            logger.warn('Failed to update device name on backend', { 
-              status: response.status,
-              error: errorData.error 
-            });
-          } else {
-            logger.info('Device name updated on backend', { deviceId, name: validatedName });
-          }
-        } catch (error) {
-          logger.error('Error updating device name on backend', error);
-          // Non-blocking: device name is saved locally even if backend update fails
-        }
-      };
-      
-      // Update device name on backend (don't await - non-blocking)
-      updateDeviceNameOnBackend();
-
-      // Auto-connect - the useWebSocket hook will connect automatically when wsUrl changes
-      // Redirect to home after connection is established
-      const checkConnection = () => {
-        if (isConnected) {
-          setPairingStep('connected');
-          // Clean up timers
-          if (redirectTimersRef.current.timer) {
-            clearTimeout(redirectTimersRef.current.timer);
-          }
-          if (redirectTimersRef.current.interval) {
-            clearInterval(redirectTimersRef.current.interval);
-          }
-          setIsPairing(false);
-          // Small delay to show "Connected" state
-          setTimeout(() => {
-            router.push('/');
-          }, 1000);
-        }
-      };
-      
-      // Check connection status periodically
-      redirectTimersRef.current.interval = setInterval(() => {
-        checkConnection();
-      }, 500);
-      
-      // Fallback redirect after 5 seconds
-      redirectTimersRef.current.timer = setTimeout(() => {
-        if (redirectTimersRef.current.interval) {
-          clearInterval(redirectTimersRef.current.interval);
-        }
-        setIsPairing(false);
-        router.push('/');
-      }, 5000);
     } catch (error) {
       setIsPairing(false);
       setPairingStep('error');
@@ -428,6 +404,190 @@ export default function PairPage() {
       }
     }
   }, [isPairing, isConnected, connectionStatus]);
+
+  // Send complete_pairing message when WebSocket connects after pairing code entry
+  useEffect(() => {
+    // Log immediately when effect runs to debug timing
+    console.log('[Pairing] Effect triggered', { isConnected, isPairing, wsUrl: wsUrl?.substring(0, 30) });
+
+    const completePairingFlow = async () => {
+      const hasPendingCode = typeof window !== 'undefined' ? !!sessionStorage.getItem('pending_pairing_code') : false;
+
+      logger.info('[Pairing] completePairingFlow check', {
+        isConnected,
+        isPairing,
+        hasPendingCode,
+        wsUrl: wsUrl?.substring(0, 30),
+      });
+
+      // Must be connected (isPairing not required - pending code in sessionStorage is enough)
+      if (!isConnected || typeof window === 'undefined') {
+        logger.info('[Pairing] Skipping - not connected', { isConnected });
+        return;
+      }
+
+      // Check if there's a pending pairing code to complete
+      const pendingCode = sessionStorage.getItem('pending_pairing_code');
+      if (!pendingCode) {
+        logger.info('[Pairing] No pending pairing code found, skipping completePairing');
+        return;
+      }
+
+      try {
+        // Clear the pending code immediately to prevent duplicate sends
+        sessionStorage.removeItem('pending_pairing_code');
+
+        logger.info('Completing pairing flow via WebSocket', {
+          codeLength: pendingCode.length,
+        });
+
+        // Get the WebSocket client and send complete_pairing message
+        const { getWebSocketClient } = await import('@/lib/ws');
+        const client = getWebSocketClient(wsUrl, deviceId);
+        client.completePairing(pendingCode);
+
+        setResult({
+          success: true,
+          message: 'Pairing in progress... Please wait for confirmation.',
+        });
+      } catch (error) {
+        logger.error('Failed to complete pairing via WebSocket', error);
+        setResult({
+          success: false,
+          message: error instanceof Error ? error.message : 'Failed to complete pairing',
+        });
+        setPairingStep('error');
+        setIsPairing(false);
+      }
+    };
+
+    completePairingFlow();
+  }, [isConnected, wsUrl, deviceId, isPairing]);
+
+  // Listen for pairing completion system message
+  useEffect(() => {
+    if (!lastSystemMessage) {
+      return;
+    }
+
+    if (lastSystemMessage.type === 'pairing_completed' && lastSystemMessage.payload) {
+      const payload = lastSystemMessage.payload as { success?: boolean; linkedUserId?: string };
+      if (payload.success) {
+        logger.info('Pairing completed successfully', { linkedUserId: payload.linkedUserId });
+        
+        setPairingStep('connected');
+        setResult({
+          success: true,
+          message: 'Pairing completed successfully! Redirecting...',
+        });
+
+        // Save the pairing device's identity keypair NOW (after pairing is confirmed)
+        // This allows Device B to use the same identity as Device A
+        const savePairingIdentity = async () => {
+          if (pairingData && pairingData.publicKeyHex && pairingData.privateKeyHex) {
+            try {
+              logger.info('[PAIRING] Starting to save identity keypair', {
+                hasPublicKey: !!pairingData.publicKeyHex,
+                hasPrivateKey: !!pairingData.privateKeyHex,
+                publicKeyPrefix: pairingData.publicKeyHex.substring(0, 16) + '...',
+              });
+              
+              const { saveIdentityKeyPair } = await import('@/lib/crypto/keys');
+              
+              const keypair = {
+                publicKey: new Uint8Array(
+                  pairingData.publicKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
+                ),
+                privateKey: new Uint8Array(
+                  pairingData.privateKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
+                ),
+                publicKeyHex: pairingData.publicKeyHex,
+                privateKeyHex: pairingData.privateKeyHex,
+              };
+              
+              logger.info('[PAIRING] Calling saveIdentityKeyPair with keypair', {
+                publicKeyLength: keypair.publicKey.length,
+                privateKeyLength: keypair.privateKey.length,
+              });
+              
+              await saveIdentityKeyPair(keypair);
+              
+              logger.info('[PAIRING] Identity keypair saved successfully to storage', {
+                publicKeyPrefix: pairingData.publicKeyHex.substring(0, 16) + '...',
+                fullPublicKey: pairingData.publicKeyHex,
+              });
+              console.log('[PAIRING] KEYPAIR SAVED - Verify in localStorage:', {
+                savedPublicKey: pairingData.publicKeyHex,
+                storageKey: 'pocketbridge_identity_keypair',
+              });
+            } catch (error) {
+              logger.error('[PAIRING] Failed to save pairing identity keypair', error);
+            }
+          } else {
+            logger.warn('[PAIRING] Cannot save identity keypair: pairingData incomplete', {
+              hasPairingData: !!pairingData,
+              hasPublicKey: !!pairingData?.publicKeyHex,
+              hasPrivateKey: !!pairingData?.privateKeyHex,
+            });
+          }
+        };
+        
+        // Save identity and redirect - must complete before reload
+        const completeAndRedirect = async () => {
+          try {
+            logger.info('[PAIRING] About to call savePairingIdentity()');
+            await savePairingIdentity();
+
+            // Mark onboarding as completed with the NEW identity (Device A's)
+            if (pairingData?.publicKeyHex) {
+              try {
+                const { completeOnboarding } = await import('@/lib/utils/user-profile');
+                await completeOnboarding(pairingData.publicKeyHex);
+                logger.info('[PAIRING] Onboarding marked complete with new identity');
+              } catch (error) {
+                logger.warn('Failed to mark onboarding complete after pairing', {
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            }
+
+            // Save paired account info for persistence across reloads
+            if (pairingData?.publicKeyHex) {
+              savePairedAccount({
+                userId: pairingData.publicKeyHex,
+                displayName: pairingData.deviceName, // Will be updated from backend
+                pairedAt: Date.now(),
+                devices: [],
+              });
+              logger.info('[PAIRING] Paired account info saved to localStorage');
+            }
+
+            // Small delay to ensure storage is flushed
+            await new Promise(resolve => setTimeout(resolve, 500));
+
+            logger.info('[PAIRING] Reloading page to reconnect with shared identity');
+            window.location.href = '/';
+          } catch (error) {
+            logger.error('[PAIRING] Failed during save and redirect', error);
+            // Still try to redirect even if save failed
+            window.location.href = '/';
+          }
+        };
+
+        completeAndRedirect();
+      }
+    } else if (lastSystemMessage.type === 'pairing_failed' && lastSystemMessage.payload) {
+      const payload = lastSystemMessage.payload as { error?: string };
+      logger.error('Pairing failed', undefined, { error: payload.error });
+      
+      setPairingStep('error');
+      setResult({
+        success: false,
+        message: `Pairing failed: ${payload.error || 'Unknown error'}`,
+      });
+      setIsPairing(false);
+    }
+  }, [lastSystemMessage, identityKeyPair, pairingData, router]);
 
   // Cleanup timers on unmount
   useEffect(() => {
@@ -553,14 +713,22 @@ export default function PairPage() {
     }
   };
 
-  // Debug: Log crypto state (development only)
+  // Debug: Log crypto state
   useEffect(() => {
-    if (process.env.NODE_ENV === 'development') {
-      logger.debug('Crypto state', {
-        isInitialized,
-        hasIdentityKeyPair: !!identityKeyPair,
-        hasError: !!cryptoError,
-        errorMessage: cryptoError?.message,
+    // Always log in both dev and prod to help debug pairing issues
+    console.log('[PAIRING PAGE] Crypto state on mount/update:', {
+      isInitialized,
+      hasIdentityKeyPair: !!identityKeyPair,
+      identityPublicKey: identityKeyPair?.publicKeyHex,
+      hasError: !!cryptoError,
+      errorMessage: cryptoError?.message,
+    });
+
+    // Check if there's a pending pairing code (indicates page was reloaded during pairing)
+    const hasPendingCode = typeof window !== 'undefined' && !!sessionStorage.getItem('pending_pairing_code');
+    if (hasPendingCode) {
+      console.log('[PAIRING PAGE] Page reloaded with pending pairing code. Current identity:', {
+        publicKey: identityKeyPair?.publicKeyHex,
       });
     }
   }, [isInitialized, identityKeyPair, cryptoError]);

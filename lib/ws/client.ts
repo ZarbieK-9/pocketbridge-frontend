@@ -14,6 +14,8 @@
  */
 
 import { WS_RECONNECT_DELAY, WS_HEARTBEAT_INTERVAL, STORAGE_KEYS } from '@/lib/constants';
+import { config } from '@/lib/config';
+import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getEventQueue } from '@/lib/sync';
 import {
   generateECDHKeyPair,
@@ -77,11 +79,16 @@ export class WebSocketClient {
   private userId: string | null = null; // Ed25519 public key (hex)
   private identityKeyPair: Ed25519KeyPair | null = null;
   private sessionKeys: SessionKeys | null = null;
-  private lastAckDeviceSeq: number = 0;
+  // NOTE: lastAckDeviceSeq is managed by EventQueue (single source of truth)
+  // Use getEventQueue().getLastAckDeviceSeq() instead of maintaining a separate copy
   private handshakeState: HandshakeState = {};
   private reconnectAttempts: number = 0;
   private maxReconnectDelay: number = 30000; // Max 30 seconds
+  private maxReconnectAttempts: number = 10; // Max reconnection attempts before giving up
   private sessionExpiresAt: number | null = null; // Session expiration timestamp
+  private handshakeRetries: number = 0;
+  private maxHandshakeRetries: number = 3; // Max handshake retries
+  private connectInProgress: boolean = false; // Guard against concurrent connect() calls
 
   constructor(url: string, deviceId: string) {
     this.url = url;
@@ -91,6 +98,13 @@ export class WebSocketClient {
     if (typeof window !== 'undefined') {
       window.addEventListener('sw-sync-request', this.handleServiceWorkerSync as EventListener);
     }
+  }
+
+  /**
+   * Get current user ID (UUID after pairing, or identity public key hex)
+   */
+  getUserId(): string | null {
+    return this.userId;
   }
   
   /**
@@ -114,12 +128,20 @@ export class WebSocketClient {
    * Connect to WebSocket server and perform handshake
    */
   async connect(): Promise<void> {
+    // Guard against concurrent connect() calls
+    if (this.connectInProgress) {
+      logger.info('[WS] connect() already in progress, skipping');
+      return;
+    }
+
     if (
       this.ws &&
       (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)
     ) {
       return;
     }
+
+    this.connectInProgress = true;
 
     // Always reset handshake state on new connection attempt
     this.handshakeState = {};
@@ -157,12 +179,35 @@ export class WebSocketClient {
       this.updateStatus('connecting');
 
       // Create WebSocket connection
+      logger.info('[WS] Creating WebSocket connection', { url: this.url });
       this.ws = new WebSocket(this.url);
+      
+      logger.info('[WS] Attaching event listeners');
+      // Use property assignment for event handlers (standard approach)
+      // Note: Do NOT also use addEventListener with the same handler - that causes duplicate firing
       this.ws.onopen = this.handleOpen.bind(this);
       this.ws.onmessage = this.handleMessage.bind(this);
       this.ws.onerror = this.handleError.bind(this);
       this.ws.onclose = (event: CloseEvent) => this.handleClose(event);
+      
+      // Watchdog: if open event is lost and no client_hello is queued within 5s, force-send it when socket is open
+      setTimeout(() => {
+        const ready = this.ws?.readyState === WebSocket.OPEN;
+        const alreadyConnected = this.status === 'connected';
+        const hasClientHello = !!this.handshakeState.nonceC || !!this.handshakeState.clientEphemeralKeyPair;
+        if (ready && !alreadyConnected && !hasClientHello) {
+          logger.warn('[HANDSHAKE] Watchdog firing: open detected but client_hello not sent; forcing sendClientHello');
+          this.sendClientHello().catch(err => {
+            logger.error('[HANDSHAKE] Watchdog sendClientHello failed', err instanceof Error ? err : new Error(String(err)));
+          });
+        }
+      }, 5000);
+      
+      logger.info('[WS] WebSocket setup complete, waiting for connection');
+      this.connectInProgress = false;
     } catch (error) {
+      this.connectInProgress = false;
+      logger.error('[WS] Error during connection setup', error);
       this.handleError(error instanceof Error ? error : new Error('Connection failed'));
     }
   }
@@ -171,8 +216,10 @@ export class WebSocketClient {
    * Handle WebSocket open
    */
   private async handleOpen(): Promise<void> {
-    await this.sendClientHello();
-    // Flush any buffered messages
+    logger.info('[HANDSHAKE] WebSocket connection opened, readyState=' + (this.ws?.readyState ?? 'N/A'));
+    
+    // Always flush any buffered messages first (before the handshake guard)
+    // This ensures client_hello buffered during CONNECTING gets sent when socket opens
     const pending: WSMessage[] = Array.isArray((this as any)._pendingMessages) ? [...(this as any)._pendingMessages] : [];
     if (pending.length > 0) {
       const stillPending: WSMessage[] = [];
@@ -186,6 +233,7 @@ export class WebSocketClient {
           // Clone payload to avoid stale buffers (defensive)
           const safeMsg: WSMessage = JSON.parse(JSON.stringify(msg));
           this.ws.send(JSON.stringify(safeMsg));
+          logger.debug('[SEND] Flushed buffered message', { type: msg.type });
         } catch (err) {
           logger.error('Failed to flush buffered message', err);
           // Keep message for retry on next open
@@ -194,42 +242,89 @@ export class WebSocketClient {
       }
       (this as any)._pendingMessages = stillPending;
     }
+
+    // Guard: if we already have an in-flight client_hello (nonceC set and no server response yet), don't resend
+    if (this.handshakeState.nonceC && !this.handshakeState.serverEphemeralPub) {
+      logger.info('[HANDSHAKE] client_hello already in-flight (buffered/sent), awaiting server_hello', {
+        hasNonceC: !!this.handshakeState.nonceC,
+        hasServerEphemeral: !!this.handshakeState.serverEphemeralPub,
+      });
+      return;
+    }
+    try {
+      logger.info('[HANDSHAKE] Calling sendClientHello()...');
+      await this.sendClientHello();
+      logger.info('[HANDSHAKE] sendClientHello() completed successfully');
+    } catch (error) {
+      logger.error('[HANDSHAKE] Failed to send client hello on WebSocket open', error);
+      this.handleError(error instanceof Error ? error : new Error(String(error)));
+      // Don't call disconnect() here - handleError() already schedules reconnect
+      // and the WebSocket will close, triggering handleClose()
+      return;
+    }
   }
 
   /**
    * Send Client Hello (Step 1 of handshake)
    */
   private async sendClientHello(): Promise<void> {
-    // Reset handshake state completely before starting new handshake
-    // This ensures we don't use stale state from previous attempts
-    this.handshakeState = {
-      clientAuthSent: false, // Reset flag for new handshake
-    };
-    
-    // Generate ephemeral ECDH keypair
-    const clientEphemeralKeyPair = await generateECDHKeyPair();
-    const nonceC = generateHandshakeNonce(); // 32-byte hex nonce for handshake
+    try {
+      logger.info('[HANDSHAKE] sendClientHello() called');
 
-    // Store handshake state
-    this.handshakeState = {
-      ...this.handshakeState,
-      clientEphemeralKeyPair,
-      nonceC,
-      clientAuthSent: false, // Ensure flag is set
-    };
+      // Prevent duplicate client_hello if one is already pending (nonceC set, no server_hello yet)
+      if (this.handshakeState.nonceC && !this.handshakeState.serverEphemeralPub) {
+        logger.info('[HANDSHAKE] client_hello already sent and awaiting server_hello; not sending another');
+        return;
+      }
 
+      // Reset handshake state completely before starting new handshake
+      // This ensures we don't use stale state from previous attempts
+      this.handshakeState = {
+        clientAuthSent: false, // Reset flag for new handshake
+      };
 
-    // Send Client Hello
-    const clientHello: ClientHello = {
-      type: 'client_hello',
-      client_ephemeral_pub: clientEphemeralKeyPair.publicKeyHex,
-      nonce_c: nonceC,
-    };
+      // CRITICAL: Clear stale session keys from previous handshake attempts
+      // Using stale keys would cause decryption failures
+      this.sessionKeys = null;
+      
+      logger.info('[HANDSHAKE] Generating ECDH keypair for handshake...');
+      // Generate ephemeral ECDH keypair
+      const clientEphemeralKeyPair = await generateECDHKeyPair();
+      logger.info('[HANDSHAKE] ECDH keypair generated successfully, generating nonce...');
+      const nonceC = generateHandshakeNonce(); // 32-byte hex nonce for handshake
 
-    this.send({
-      type: 'client_hello',
-      payload: clientHello,
-    });
+      // Store handshake state
+      this.handshakeState = {
+        ...this.handshakeState,
+        clientEphemeralKeyPair,
+        nonceC,
+        clientAuthSent: false, // Ensure flag is set
+      };
+
+      logger.info('[HANDSHAKE] About to send client_hello message', {
+        ephemeralPubKeyPrefix: clientEphemeralKeyPair.publicKeyHex.substring(0, 16) + '...',
+        nonceCLength: nonceC.length,
+        wsReadyState: this.ws?.readyState ?? 'N/A',
+        wsUrl: this.url,
+      });
+
+      // Send Client Hello
+      const clientHello: ClientHello = {
+        type: 'client_hello',
+        client_ephemeral_pub: clientEphemeralKeyPair.publicKeyHex,
+        nonce_c: nonceC,
+      };
+
+      this.send({
+        type: 'client_hello',
+        payload: clientHello,
+      });
+      
+      logger.info('[HANDSHAKE] client_hello message sent to WebSocket');
+    } catch (error) {
+      logger.error('[HANDSHAKE] Error in sendClientHello', error);
+      throw error;
+    }
   }
 
   /**
@@ -246,7 +341,7 @@ export class WebSocketClient {
     if (!this.handshakeState.clientEphemeralKeyPair || !this.handshakeState.nonceC) {
       logger.error('Handshake state error: clientEphemeralKeyPair or nonceC missing in handleServerHello. Resetting handshake state.');
       this.handshakeState = {};
-      this.disconnect();
+      this.handleError(new Error('Handshake state corrupted'));
       return;
     }
 
@@ -266,17 +361,44 @@ export class WebSocketClient {
       this.handshakeState.serverEphemeralPub = message.server_ephemeral_pub;
       this.handshakeState.nonceS = message.nonce_s;
 
-
     // Verify server signature and pin server identity (TOFU with change detection)
-    const signatureData = await this.hashForSignature(
-      message.server_identity_pub,
-      message.server_ephemeral_pub,
-      this.handshakeState.nonceC,
-      message.nonce_s
-    );
+    let signatureData: Uint8Array;
+    let signatureBytes: Uint8Array;
+    let serverIdentityBytes: Uint8Array;
+    
+    try {
+      signatureData = await this.hashForSignature(
+        message.server_identity_pub,
+        message.server_ephemeral_pub,
+        this.handshakeState.nonceC,
+        message.nonce_s
+      );
 
-    const signatureBytes = this.hexToBytes(message.server_signature);
-    const serverIdentityBytes = this.hexToBytes(message.server_identity_pub);
+      signatureBytes = this.hexToBytes(message.server_signature);
+      serverIdentityBytes = this.hexToBytes(message.server_identity_pub);
+
+      const signatureDataHex = Buffer.from(signatureData).toString('hex');
+      logger.info('[HANDSHAKE] ServerHello verification inputs', {
+        serverIdentityPubPrefix: message.server_identity_pub?.substring(0, 16) + '...',
+        serverIdentityPubLength: message.server_identity_pub?.length,
+        serverEphemeralPubPrefix: message.server_ephemeral_pub?.substring(0, 16) + '...',
+        serverEphemeralPubLength: message.server_ephemeral_pub?.length,
+        nonceC: this.handshakeState.nonceC,
+        nonceS: message.nonce_s,
+        signatureLength: message.server_signature?.length,
+        signatureDataHashPrefix: signatureDataHex.substring(0, 16) + '...',
+        signatureDataHashLength: signatureDataHex.length,
+        signatureDataHashFull: signatureDataHex,
+      });
+    } catch (err) {
+      const error = new Error(`Failed to prepare signature verification: ${err instanceof Error ? err.message : String(err)}`);
+      logger.error('Signature preparation error', {
+        error: error.message,
+        originalError: err instanceof Error ? err.message : String(err),
+      });
+      this.handleError(error);
+      return;
+    }
 
     const pinnedKey = this.getPinnedServerKey();
     if (pinnedKey && pinnedKey !== message.server_identity_pub) {
@@ -286,16 +408,39 @@ export class WebSocketClient {
         receivedKey: message.server_identity_pub.substring(0, 16) + '...',
       });
       this.handleError(error);
-      this.disconnect();
       return;
     }
 
-    const isValidSignature = await verifyEd25519(signatureBytes, signatureData, serverIdentityBytes);
+    let isValidSignature = false;
+    try {
+      const signatureBytes = this.hexToBytes(message.server_signature);
+      const serverIdentityBytes = this.hexToBytes(message.server_identity_pub);
+      isValidSignature = await verifyEd25519(
+        signatureBytes,
+        signatureData,
+        serverIdentityBytes
+      );
+    } catch (err) {
+      const error = new Error(`Signature verification threw error: ${err instanceof Error ? err.message : String(err)}`);
+      logger.error('Signature verification exception', {
+        error: error.message,
+        originalError: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      this.handleError(error);
+      return;
+    }
+
     if (!isValidSignature) {
       const error = new Error('Server signature verification failed');
-      logger.error('Server signature verification failed');
+      logger.error('Server signature verification failed', {
+        error: error.message,
+        serverIdentityPub: message.server_identity_pub.substring(0, 16) + '...',
+        signatureDataLength: signatureData.length,
+        signatureBytesLength: signatureBytes.length,
+        serverIdentityBytesLength: serverIdentityBytes.length,
+      });
       this.handleError(error);
-      this.disconnect();
       return;
     }
 
@@ -405,14 +550,23 @@ export class WebSocketClient {
    * Handle Session Established (Step 4 of handshake)
    */
   private handleSessionEstablished(message: SessionEstablished): void {
-    this.lastAckDeviceSeq = message.last_ack_device_seq;
+    // Parse last_ack_device_seq as number (server may send as string)
+    const lastAckSeq = typeof message.last_ack_device_seq === 'string'
+      ? parseInt(message.last_ack_device_seq, 10)
+      : message.last_ack_device_seq;
+
+    logger.info('[HANDSHAKE] Session established received', {
+      lastAckDeviceSeq: lastAckSeq,
+      expiresAt: message.expires_at,
+    });
     this.sessionExpiresAt = message.expires_at || null;
 
     // Sync device sequence to ensure monotonicity
     // This prevents sending events with device_seq <= last_ack_device_seq
+    // IMPORTANT: EventQueue is the single source of truth for lastAckDeviceSeq
     const queue = getEventQueue();
-    queue.syncDeviceSeq(this.lastAckDeviceSeq);
-    queue.acknowledge(this.deviceId, this.lastAckDeviceSeq);
+    queue.setLastAckFromServer(lastAckSeq);
+    queue.acknowledge(this.deviceId, lastAckSeq);
 
     // Clear handshake state (including clientAuthSent flag)
     this.handshakeState = {};
@@ -420,10 +574,12 @@ export class WebSocketClient {
     // Update status
     this.updateStatus('connected');
     this.reconnectAttempts = 0; // Reset on successful connection
+    this.resetHandshakeRetries(); // Reset handshake retries on successful connection
     this.startHeartbeat();
 
     // Request replay if needed
-    if (this.lastAckDeviceSeq > 0) {
+    const lastAck = queue.getLastAckDeviceSeq();
+    if (lastAck > 0) {
       this.requestReplay();
     }
 
@@ -490,9 +646,10 @@ export class WebSocketClient {
    * Request replay of missing events (with pagination support)
    */
   private requestReplay(continuationToken?: string): void {
+    const queue = getEventQueue();
     const replayRequest: ReplayRequest = {
       type: 'replay_request',
-      last_ack_device_seq: this.lastAckDeviceSeq,
+      last_ack_device_seq: queue.getLastAckDeviceSeq(),
       limit: 100, // Request 100 events per page
       ...(continuationToken && { continuation_token: continuationToken }),
     };
@@ -539,6 +696,30 @@ export class WebSocketClient {
         totalEvents: message.total_events 
       });
     }
+  }
+
+  /**
+   * Complete pairing by sending pairing code to backend
+   * This links this device to another user's account
+   */
+  completePairing(pairingCode: string): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      logger.error('Cannot complete pairing: WebSocket not connected');
+      throw new Error('WebSocket not connected. Please wait for connection and try again.');
+    }
+
+    if (!pairingCode || pairingCode.length !== 6) {
+      throw new Error('Invalid pairing code format');
+    }
+
+    logger.info('Sending complete_pairing message', { codeLength: pairingCode.length });
+
+    this.send({
+      type: 'complete_pairing',
+      payload: {
+        pairing_code: pairingCode,
+      },
+    });
   }
 
   /**
@@ -604,26 +785,39 @@ export class WebSocketClient {
 
     const queue = getEventQueue();
     const pending = await queue.getPending();
+    const lastAckSeq = queue.getLastAckDeviceSeq();
 
     // Filter out events that:
     // 1. Have device_seq <= last_ack_device_seq (already processed)
     // 2. Have user_id !== current userId (from different identity keypair)
+    // 3. Have device_id !== this device (events from other devices should not be resent)
     const validPending = pending.filter(event => {
-      const validSeq = event.device_seq > this.lastAckDeviceSeq;
+      const validSeq = event.device_seq > lastAckSeq;
       const validUserId = event.user_id === this.userId;
-      return validSeq && validUserId;
+      const validDeviceId = event.device_id === this.deviceId;
+      return validSeq && validUserId && validDeviceId;
     });
 
     if (validPending.length < pending.length) {
-      const skipped = pending.length - validPending.length;
-      const skippedSeq = pending.filter(e => e.device_seq <= this.lastAckDeviceSeq).length;
+      const skippedSeq = pending.filter(e => e.device_seq <= lastAckSeq).length;
       const skippedUserId = pending.filter(e => e.user_id !== this.userId).length;
-      
-      
-      // Acknowledge the skipped events with bad sequence as they're likely duplicates
-    for (const event of pending) {
-        if (event.device_seq <= this.lastAckDeviceSeq && event.user_id === this.userId) {
-          queue.acknowledge(this.deviceId, event.device_seq);
+      const skippedDeviceId = pending.filter(e => e.device_id !== this.deviceId).length;
+
+      logger.info('Filtering pending events', {
+        total: pending.length,
+        valid: validPending.length,
+        skippedSeq,
+        skippedUserId,
+        skippedDeviceId,
+        thisDeviceId: this.deviceId?.substring(0, 8) + '...',
+      });
+
+      // Clean up acknowledged and orphaned events from IndexedDB
+      // This prevents orphaned events from accumulating indefinitely
+      if (this.userId) {
+        const deletedCount = await queue.cleanup(this.userId);
+        if (deletedCount > 0) {
+          logger.info('Cleaned up stale events from IndexedDB', { deletedCount });
         }
       }
     }
@@ -674,6 +868,17 @@ export class WebSocketClient {
         case 'ack':
           this.handleAck(message.payload as { device_seq: number });
           break;
+        case 'pong':
+          // Handle heartbeat pong - no action needed, just acknowledges ping
+          logger.debug('Received heartbeat pong', { timestamp: Date.now() });
+          break;
+        case 'pairing_completed':
+          logger.info('[WS] Received pairing_completed message', { payload: message.payload });
+          this.handlePairingCompleted(message.payload as { success: boolean; linkedUserId?: string });
+          break;
+        case 'pairing_failed':
+          this.handlePairingFailed(message.payload as { error: string });
+          break;
         case 'device_status_changed':
         case 'device_presence':
           this.emitSystem((message.payload || message) as SystemMessage);
@@ -694,8 +899,19 @@ export class WebSocketClient {
    * Handle incoming encrypted event
    */
   private async handleIncomingEvent(event: EncryptedEvent): Promise<void> {
+    // DEBUG: Log all incoming events
+    logger.info('[handleIncomingEvent] Received event', {
+      type: event.type,
+      eventId: event.event_id,
+      deviceId: event.device_id,
+      hasSessionKeys: !!this.sessionKeys,
+    });
+
     if (!this.sessionKeys) {
-      logger.error('No session keys, cannot decrypt event');
+      logger.error('No session keys, cannot handle event - EVENT DROPPED', {
+        type: event.type,
+        eventId: event.event_id,
+      });
       return;
     }
 
@@ -707,6 +923,10 @@ export class WebSocketClient {
     // Note: Features handle decryption themselves
 
     // Notify handlers
+    logger.info('[handleIncomingEvent] Notifying handlers', {
+      type: event.type,
+      handlerCount: this.eventHandlers.length,
+    });
     this.eventHandlers.forEach(handler => {
       try {
         handler(event);
@@ -724,10 +944,10 @@ export class WebSocketClient {
 
   /**
    * Handle acknowledgment from server
+   * Updates the queue's lastAckDeviceSeq (single source of truth)
    */
   private handleAck(ack: { device_seq: number }): void {
-    this.lastAckDeviceSeq = ack.device_seq;
-
+    // EventQueue is the single source of truth for lastAckDeviceSeq
     const queue = getEventQueue();
     queue.acknowledge(this.deviceId, ack.device_seq);
   }
@@ -736,7 +956,18 @@ export class WebSocketClient {
    * Send message via WebSocket
    */
   private send(message: WSMessage): void {
+    const wsReady = this.ws && this.ws.readyState === WebSocket.OPEN;
+    logger.info('[SEND] send() called', {
+      messageType: message.type,
+      wsReadyState: this.ws?.readyState ?? 'N/A',
+      wsConnected: wsReady,
+    });
+    
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      logger.warn('[SEND] WebSocket not open, buffering message', {
+        hasWs: !!this.ws,
+        readyState: this.ws?.readyState ?? 'N/A',
+      });
       // Buffer message until socket opens
       const queue: WSMessage[] = (this as any)._pendingMessages || [];
       // Clone message to avoid retaining references to detached buffers
@@ -749,9 +980,11 @@ export class WebSocketClient {
     try {
       // Clone before sending to avoid DOMExceptions from stale objects
       const safeMsg: WSMessage = JSON.parse(JSON.stringify(message));
+      logger.info('[SEND] Calling ws.send() for message type: ' + message.type);
       this.ws.send(JSON.stringify(safeMsg));
+      logger.info('[SEND] ws.send() succeeded');
     } catch (err) {
-      logger.error('WebSocket send failed, buffering for retry', err);
+      logger.error('[SEND] WebSocket send failed, buffering for retry', err);
       const queue: WSMessage[] = (this as any)._pendingMessages || [];
       queue.push(JSON.parse(JSON.stringify(message)));
       (this as any)._pendingMessages = queue;
@@ -795,6 +1028,26 @@ export class WebSocketClient {
    * Schedule reconnection attempt with exponential backoff
    */
   private scheduleReconnect(): void {
+    // Check if we've exceeded max reconnection attempts
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      logger.warn('Max reconnection attempts reached, stopping reconnect', {
+        attempts: this.reconnectAttempts,
+        maxAttempts: this.maxReconnectAttempts,
+      });
+      this.updateStatus('error');
+      const error = new Error(
+        `Failed to connect after ${this.maxReconnectAttempts} attempts. Please check your network connection and backend status.`
+      );
+      this.errorHandlers.forEach(handler => {
+        try {
+          handler(error);
+        } catch (err) {
+          logger.error('Error handler error', err);
+        }
+      });
+      return;
+    }
+    
     this.stopReconnect();
 
     // Only reconnect if the previous WebSocket is fully closed
@@ -822,6 +1075,62 @@ export class WebSocketClient {
   }
 
   /**
+   * Reset handshake retry counter on successful connection
+   */
+  private resetHandshakeRetries(): void {
+    this.handshakeRetries = 0;
+  }
+  
+  /**
+   * Handle handshake failure with retry logic
+   */
+  private handleHandshakeFailure(reason: string): void {
+    this.handshakeRetries++;
+    
+    if (this.handshakeRetries >= this.maxHandshakeRetries) {
+      logger.error('Max handshake retries reached', {
+        retries: this.handshakeRetries,
+        maxRetries: this.maxHandshakeRetries,
+        reason,
+      });
+      
+      this.updateStatus('error');
+      const error = new Error(
+        `Handshake failed after ${this.maxHandshakeRetries} attempts: ${reason}. Please try again later or contact support.`
+      );
+      this.errorHandlers.forEach(handler => {
+        try {
+          handler(error);
+        } catch (err) {
+          logger.error('Error handler error', err);
+        }
+      });
+      
+      // Close connection and stop retrying
+      if (this.ws) {
+        this.ws.close(1008, 'Handshake failed');
+      }
+      return;
+    }
+    
+    logger.warn('Handshake failed, retrying...', {
+      attempt: this.handshakeRetries,
+      maxRetries: this.maxHandshakeRetries,
+      reason,
+    });
+    
+    // Wait a bit before retrying handshake
+    setTimeout(() => {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.sendClientHello();
+      } else {
+        // Connection closed, trigger reconnect
+        this.scheduleReconnect();
+      }
+    }, 2000 * this.handshakeRetries); // Exponential backoff: 2s, 4s, 6s
+  }
+  
+  /**
    * Stop reconnection attempts
    */
   private stopReconnect(): void {
@@ -829,6 +1138,57 @@ export class WebSocketClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+  }
+
+  /**
+   * Handle pairing completed message
+   */
+  private handlePairingCompleted(message: { success: boolean; linkedUserId?: string }): void {
+    if (message.success && message.linkedUserId) {
+      logger.info('Pairing completed successfully', {
+        linkedUserId: message.linkedUserId.substring(0, 16) + '...',
+      });
+
+      // Update local userId to match the linked account
+      // This is critical - the backend has already updated sessionState.userId
+      // so we need to match it on the client side
+      this.userId = message.linkedUserId;
+
+      // CRITICAL: Reset event queue and sequence counters
+      // The server has reset last_ack_device_seq to 0 in the database,
+      // so we must reset our local counters to prevent "Device sequence not monotonic" errors
+      // EventQueue.reset() handles all state (it's the single source of truth)
+      const queue = getEventQueue();
+      queue.reset();
+      logger.info('Reset event queue after pairing', { linkedUserId: message.linkedUserId.substring(0, 16) + '...' });
+
+      // Emit system message for UI updates
+      this.emitSystem({
+        type: 'pairing_completed',
+        payload: {
+          success: true,
+          linkedUserId: message.linkedUserId,
+        },
+      });
+    } else {
+      logger.error('Pairing completed but no linkedUserId provided', { message });
+    }
+  }
+
+  /**
+   * Handle pairing failed message
+   */
+  private handlePairingFailed(message: { error: string }): void {
+    logger.error('Pairing failed', undefined, { error: message.error });
+
+    this.emitSystem({
+      type: 'pairing_failed',
+      payload: {
+        error: message.error,
+      },
+    });
+
+    this.handleError(new Error(`Pairing failed: ${message.error}`));
   }
 
   /**
@@ -884,10 +1244,10 @@ export class WebSocketClient {
     });
 
     // Clear local state and reset
+    // EventQueue.clear() calls reset() internally which handles lastAckDeviceSeq
     const queue = getEventQueue();
     queue.clear().then(() => {
       logger.info('Local state cleared, reconnecting');
-      this.lastAckDeviceSeq = 0;
       this.disconnect();
       this.connect();
     });
@@ -1109,26 +1469,26 @@ let lastUrl: string | null = null;
 let lastDeviceId: string | null = null;
 
 export function getWebSocketClient(url?: string, deviceId?: string): WebSocketClient {
+  // Resolve defaults when not provided (background jobs, hooks)
+  const resolvedUrl = url || config.wsUrl;
+  const resolvedDeviceId = deviceId || getOrCreateDeviceId();
+
   // If URL or deviceId changed, recreate the client
-  if (clientInstance && (url !== lastUrl || deviceId !== lastDeviceId)) {
+  if (clientInstance && (resolvedUrl !== lastUrl || resolvedDeviceId !== lastDeviceId)) {
     logger.info('WebSocket client parameters changed, creating new instance', { 
       oldUrl: lastUrl?.substring(0, 30), 
-      newUrl: url?.substring(0, 30),
+      newUrl: resolvedUrl?.substring(0, 30),
       oldDeviceId: lastDeviceId?.substring(0, 8),
-      newDeviceId: deviceId?.substring(0, 8),
+      newDeviceId: resolvedDeviceId?.substring(0, 8),
     });
     clientInstance.disconnect();
     clientInstance = null;
   }
 
-  if (!clientInstance && url && deviceId) {
-    clientInstance = new WebSocketClient(url, deviceId);
-    lastUrl = url;
-    lastDeviceId = deviceId;
-  }
-
   if (!clientInstance) {
-    throw new Error('WebSocket client not initialized. Call with url and deviceId first.');
+    clientInstance = new WebSocketClient(resolvedUrl, resolvedDeviceId);
+    lastUrl = resolvedUrl;
+    lastDeviceId = resolvedDeviceId;
   }
 
   return clientInstance;

@@ -17,6 +17,7 @@ import { createEvent } from '@/lib/sync/event-builder';
 import { decryptPayload } from '@/lib/crypto/encryption';
 import { getEventsByStream } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
+import { getWebSocketClient } from '@/lib/ws';
 import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
 import type { EncryptedEvent, ScratchpadOpPayload } from '@/types';
 
@@ -75,6 +76,8 @@ export async function sendScratchpadOp(
   operation: TextOperation,
 ): Promise<EncryptedEvent> {
   const deviceId = getOrCreateDeviceId();
+  const wsClient = getWebSocketClient();
+  const userId = wsClient.getUserId() || undefined;
   
   const payload: ScratchpadOpPayload = {
     op: JSON.stringify(operation),
@@ -86,6 +89,7 @@ export async function sendScratchpadOp(
     deviceId,
     'scratchpad:op',
     payload,
+    userId,
   );
 }
 

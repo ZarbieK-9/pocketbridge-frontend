@@ -57,18 +57,43 @@ export default function FilesPage() {
   const [syncStatus, setSyncStatus] = useState<'idle' | 'sending' | 'synced' | 'error'>('idle');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Handle incoming file events
+  // Handle incoming file events (skip self-originated events)
   useEffect(() => {
+    // DEBUG: Log all incoming events for tracing (only file events to reduce noise)
+    if (lastEvent && lastEvent.type.startsWith('file:')) {
+      console.log('[FILES PAGE] Received FILE event:', {
+        type: lastEvent.type,
+        eventId: lastEvent.event_id,
+        deviceId: lastEvent.device_id,
+        isOwnDevice: lastEvent.device_id === deviceId,
+        hasSessionKeys: !!sessionKeys,
+        incomingFilesCount: incomingFiles.size,
+      });
+    }
+
     if (lastEvent && sessionKeys) {
+      // Skip events from this device to avoid processing our own uploads
+      if (lastEvent.device_id === deviceId) {
+        console.log('[FILES PAGE] Skipping own device event');
+        return;
+      }
+
       if (lastEvent.type === 'file:metadata') {
+        console.log('[FILES PAGE] Processing file:metadata event');
         handleIncomingFileMetadata(lastEvent);
         setSyncStatus('synced');
         toast('File received from another device', 'success');
       } else if (lastEvent.type === 'file:chunk') {
+        console.log('[FILES PAGE] Processing file:chunk event');
         handleIncomingFileChunk(lastEvent);
       }
+    } else if (lastEvent && !sessionKeys) {
+      console.warn('[FILES PAGE] Event received but no session keys!', {
+        type: lastEvent.type,
+        eventId: lastEvent.event_id,
+      });
     }
-  }, [lastEvent, sessionKeys]);
+  }, [lastEvent, sessionKeys, deviceId]);
 
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -194,10 +219,14 @@ export default function FilesPage() {
   }
 
   async function handleIncomingFileMetadata(event: any) {
+    console.log('[FILES PAGE] handleIncomingFileMetadata called', { eventId: event.event_id });
     try {
       const { receiveFileMetadata } = await import('@/lib/features/files');
+      console.log('[FILES PAGE] Calling receiveFileMetadata...');
       const metadata = await receiveFileMetadata(event);
+      console.log('[FILES PAGE] receiveFileMetadata result:', metadata);
       if (metadata) {
+        console.log('[FILES PAGE] Adding file to incomingFiles:', { fileId: metadata.file_id, name: metadata.name });
         // Add to incoming files tracking
         setIncomingFiles(prev => {
           const newMap = new Map(prev);
@@ -205,6 +234,7 @@ export default function FilesPage() {
             metadata,
             chunks: new Map(),
           });
+          console.log('[FILES PAGE] incomingFiles updated, size:', newMap.size);
           return newMap;
         });
 
@@ -262,12 +292,28 @@ export default function FilesPage() {
           const file = newMap.get(fileId);
           if (file) {
             file.chunks.set(chunk.chunkIndex, chunk.data);
-            
-            // Check if all chunks received
-            if (file.chunks.size === file.metadata.total_chunks) {
+
+            // Validate ALL chunk indices from 0 to total_chunks-1 are present
+            // (not just count - indices must be contiguous)
+            const totalChunks = file.metadata.total_chunks;
+            let allChunksPresent = file.chunks.size === totalChunks;
+            if (allChunksPresent) {
+              // Verify each index exists
+              for (let i = 0; i < totalChunks; i++) {
+                if (!file.chunks.has(i)) {
+                  allChunksPresent = false;
+                  break;
+                }
+              }
+            }
+
+            if (allChunksPresent) {
               // Reassemble and download
               reassembleAndDownloadFile(file.metadata, file.chunks);
-              
+
+              // MEMORY CLEANUP: Remove completed file from tracking to prevent memory leak
+              newMap.delete(fileId);
+
               // Update transfer status
               setTransfers(prev =>
                 prev.map(t =>

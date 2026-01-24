@@ -16,6 +16,19 @@ import type { Ed25519KeyPair } from '@/types';
 // Cache for shared encryption key (derived from identity keypair)
 let cachedSharedKey: { publicKeyHex: string; key: CryptoKey } | null = null;
 
+// Pending derivation promise to prevent race conditions
+// If two calls happen concurrently, the second one awaits the first instead of deriving separately
+let pendingDerivation: { publicKeyHex: string; promise: Promise<CryptoKey> } | null = null;
+
+/**
+ * Clear the cached shared encryption key
+ * Call this when the identity keypair changes (e.g., after pairing)
+ */
+export function clearCachedSharedKey(): void {
+  cachedSharedKey = null;
+  pendingDerivation = null;
+}
+
 /**
  * Generate an Ed25519 keypair for device identity
  * Uses @noble/ed25519 polyfill since Web Crypto API doesn't support Ed25519
@@ -71,7 +84,15 @@ export async function verifyEd25519(
  * Save identity keypair to localStorage
  */
 export function saveIdentityKeyPair(keyPair: Ed25519KeyPair): void {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined') {
+    console.error('[saveIdentityKeyPair] Cannot save: window is undefined');
+    return;
+  }
+
+  console.log('[saveIdentityKeyPair] Saving keypair to localStorage', {
+    publicKeyPrefix: keyPair.publicKeyHex?.substring(0, 16) + '...',
+    hasPrivateKey: !!keyPair.privateKeyHex,
+  });
 
   const keyData = {
     publicKeyHex: keyPair.publicKeyHex,
@@ -79,6 +100,75 @@ export function saveIdentityKeyPair(keyPair: Ed25519KeyPair): void {
   };
 
   localStorage.setItem(STORAGE_KEYS.IDENTITY_KEYPAIR, JSON.stringify(keyData));
+
+  // Clear cached shared key since identity changed
+  clearCachedSharedKey();
+
+  // CRITICAL: Clear the shared-key module's cache SYNCHRONOUSLY
+  // Previously this was async (dynamic import) which caused a race condition:
+  // Code could call getSharedEncryptionKey() before the cache was cleared,
+  // returning a stale key that couldn't decrypt events from the new identity
+  try {
+    // Use require-style pattern that's synchronous in webpack/next.js bundles
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const sharedKeyModule = require('./shared-key');
+    sharedKeyModule.clearSharedKeyCache();
+    console.log('[saveIdentityKeyPair] Cleared shared key caches synchronously');
+  } catch (err) {
+    // Fallback to async import if synchronous require fails
+    console.warn('[saveIdentityKeyPair] Sync require failed, trying async import:', err);
+    import('./shared-key').then(({ clearSharedKeyCache }) => {
+      clearSharedKeyCache();
+      console.log('[saveIdentityKeyPair] Cleared shared key caches (async fallback)');
+    }).catch(importErr => {
+      console.error('[saveIdentityKeyPair] Could not clear shared-key cache:', importErr);
+    });
+  }
+
+  // CRITICAL: Reset event queue and sequence counters SYNCHRONOUSLY when identity changes
+  // This prevents "Device sequence not monotonic" errors after pairing
+  // We do this synchronously because page may reload immediately after pairing
+  try {
+    localStorage.removeItem('pocketbridge_device_seq');
+    localStorage.removeItem('pocketbridge_last_ack_seq');
+    console.log('[saveIdentityKeyPair] Reset event queue counters synchronously for new identity');
+  } catch (err) {
+    console.warn('[saveIdentityKeyPair] Could not reset event queue counters:', err);
+  }
+
+  // CRITICAL: Clear IndexedDB events from old identity
+  // These events are encrypted with the OLD key and cannot be decrypted with the NEW key
+  // We do this asynchronously but fire-and-forget since the key change is already saved
+  import('@/lib/sync/db').then(async ({ deleteOrphanedEvents, clearDatabase }) => {
+    try {
+      // Delete events that don't belong to the new identity
+      const deletedCount = await deleteOrphanedEvents(keyPair.publicKeyHex);
+      console.log('[saveIdentityKeyPair] Deleted orphaned events from old identity:', deletedCount);
+
+      // Also clear the entire database if there were orphaned events
+      // This ensures a clean slate for the new identity
+      if (deletedCount > 0) {
+        console.log('[saveIdentityKeyPair] Clearing remaining IndexedDB data for clean start');
+        await clearDatabase();
+        console.log('[saveIdentityKeyPair] IndexedDB cleared successfully');
+      }
+    } catch (dbErr) {
+      console.error('[saveIdentityKeyPair] Failed to clean up IndexedDB:', dbErr);
+    }
+  }).catch(importErr => {
+    console.error('[saveIdentityKeyPair] Could not import db module for cleanup:', importErr);
+  });
+
+  // Verify save succeeded
+  const saved = localStorage.getItem(STORAGE_KEYS.IDENTITY_KEYPAIR);
+  if (saved) {
+    const parsed = JSON.parse(saved);
+    console.log('[saveIdentityKeyPair] Verified save succeeded', {
+      savedPublicKeyPrefix: parsed.publicKeyHex?.substring(0, 16) + '...',
+    });
+  } else {
+    console.error('[saveIdentityKeyPair] FAILED: Key not found after save!');
+  }
 }
 
 /**
@@ -99,6 +189,14 @@ export async function loadIdentityKeyPair(): Promise<Ed25519KeyPair | null> {
     const privateKey = new Uint8Array(
       keyData.privateKeyHex.match(/.{1,2}/g)?.map((byte: string) => parseInt(byte, 16)) || []
     );
+
+    // DEBUG: Log loaded keypair info for troubleshooting
+    const pkFingerprint = Array.from(privateKey.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join('');
+    console.log('[loadIdentityKeyPair] Loaded keypair:', {
+      publicKeyPrefix: keyData.publicKeyHex.substring(0, 16) + '...',
+      privateKeyLength: privateKey.length,
+      privateKeyFingerprint: pkFingerprint + '...',
+    });
 
     return {
       publicKey,
@@ -174,62 +272,110 @@ export async function deriveSharedEncryptionKey(
   if (cachedSharedKey && cachedSharedKey.publicKeyHex === identityKeyPair.publicKeyHex) {
     return cachedSharedKey.key;
   }
-  // Use private key as input material (all devices of same user have same private key)
-  // Create a new Uint8Array to ensure we have a clean buffer
-  const privateKeyBytes = new Uint8Array(identityKeyPair.privateKey);
-  const privateKeyBuffer = privateKeyBytes.buffer;
 
-  // Salt = SHA256("pocketbridge_shared_key_v1" || publicKeyHex)
-  const saltPrefix = new TextEncoder().encode('pocketbridge_shared_key_v1');
-  const publicKeyBytes = new Uint8Array(
-    identityKeyPair.publicKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
-  );
-  const saltInput = new Uint8Array(saltPrefix.length + publicKeyBytes.length);
-  saltInput.set(saltPrefix, 0);
-  saltInput.set(publicKeyBytes, saltPrefix.length);
-  const saltBuffer = await crypto.subtle.digest('SHA-256', saltInput);
+  // Check if there's already a pending derivation for this key
+  // This prevents race conditions where two concurrent calls both derive separately
+  if (pendingDerivation && pendingDerivation.publicKeyHex === identityKeyPair.publicKeyHex) {
+    return pendingDerivation.promise;
+  }
 
-  // Info = protocol identifier
-  const info = new TextEncoder().encode('pocketbridge_event_encryption_v1');
+  // Start derivation and store the promise so concurrent calls can await it
+  const derivationPromise = (async () => {
+    // Use private key as input material (all devices of same user have same private key)
+    // Create a new Uint8Array to ensure we have a clean buffer
+    const privateKeyBytes = new Uint8Array(identityKeyPair.privateKey);
+    const privateKeyBuffer = privateKeyBytes.buffer;
 
-  // Import private key as key material for HKDF
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    privateKeyBuffer,
-    'HKDF',
-    false,
-    ['deriveBits']
-  );
+    // DEBUG: Log private key fingerprint for troubleshooting key mismatch
+    const pkFingerprint = Array.from(privateKeyBytes.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join('');
+    console.log('[deriveSharedEncryptionKey] Using private key:', {
+      length: privateKeyBytes.length,
+      fingerprint: pkFingerprint + '...',
+      publicKeyPrefix: identityKeyPair.publicKeyHex.substring(0, 16) + '...',
+    });
 
-  // HKDF expand (32 bytes = AES-256 key)
-  const sharedKeyBits = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: saltBuffer,
-      info: info,
-    },
-    keyMaterial,
-    256 // 32 bytes
-  );
+    // Salt = SHA256("pocketbridge_shared_key_v1" || publicKeyHex)
+    const saltPrefix = new TextEncoder().encode('pocketbridge_shared_key_v1');
+    const publicKeyBytes = new Uint8Array(
+      identityKeyPair.publicKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
+    );
+    const saltInput = new Uint8Array(saltPrefix.length + publicKeyBytes.length);
+    saltInput.set(saltPrefix, 0);
+    saltInput.set(publicKeyBytes, saltPrefix.length);
+    const saltBuffer = await crypto.subtle.digest('SHA-256', saltInput);
 
-  // Import as AES-GCM key
-  const sharedKey = await crypto.subtle.importKey(
-    'raw',
-    sharedKeyBits,
-    {
-      name: 'AES-GCM',
-      length: 256,
-    },
-    true, // extractable (for debugging if needed)
-    ['encrypt', 'decrypt']
-  );
+    // Info = protocol identifier
+    const info = new TextEncoder().encode('pocketbridge_event_encryption_v1');
 
-  // Cache the key
-  cachedSharedKey = {
+    // Import private key as key material for HKDF
+    const keyMaterial = await crypto.subtle.importKey(
+      'raw',
+      privateKeyBuffer,
+      'HKDF',
+      false,
+      ['deriveBits']
+    );
+
+    // HKDF expand (32 bytes = AES-256 key)
+    const sharedKeyBits = await crypto.subtle.deriveBits(
+      {
+        name: 'HKDF',
+        hash: 'SHA-256',
+        salt: saltBuffer,
+        info: info,
+      },
+      keyMaterial,
+      256 // 32 bytes
+    );
+
+    // Import as AES-GCM key
+    const sharedKey = await crypto.subtle.importKey(
+      'raw',
+      sharedKeyBits,
+      {
+        name: 'AES-GCM',
+        length: 256,
+      },
+      true, // extractable (for debugging if needed)
+      ['encrypt', 'decrypt']
+    );
+
+    // Cache the key
+    cachedSharedKey = {
+      publicKeyHex: identityKeyPair.publicKeyHex,
+      key: sharedKey,
+    };
+
+    // DEBUG: Log key derivation info for troubleshooting
+    try {
+      const exportedKey = await crypto.subtle.exportKey('raw', sharedKey);
+      const keyBytes = new Uint8Array(exportedKey);
+      const keyFingerprint = Array.from(keyBytes.slice(0, 8)).map(b => b.toString(16).padStart(2, '0')).join('');
+      console.log('[deriveSharedEncryptionKey] Key derived successfully', {
+        publicKeyPrefix: identityKeyPair.publicKeyHex.substring(0, 16) + '...',
+        privateKeyLength: identityKeyPair.privateKey.length,
+        keyFingerprint: keyFingerprint + '...',
+      });
+    } catch (e) {
+      console.log('[deriveSharedEncryptionKey] Key derived (could not export for debug)');
+    }
+
+    return sharedKey;
+  })();
+
+  // Store pending derivation so concurrent calls can await it
+  pendingDerivation = {
     publicKeyHex: identityKeyPair.publicKeyHex,
-    key: sharedKey,
+    promise: derivationPromise,
   };
 
-  return sharedKey;
+  try {
+    const key = await derivationPromise;
+    return key;
+  } finally {
+    // Clear pending derivation after completion
+    if (pendingDerivation?.publicKeyHex === identityKeyPair.publicKeyHex) {
+      pendingDerivation = null;
+    }
+  }
 }

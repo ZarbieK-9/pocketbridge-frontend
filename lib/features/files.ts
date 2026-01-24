@@ -14,9 +14,10 @@ import { createEvent } from '@/lib/sync/event-builder';
 import { decryptPayload } from '@/lib/crypto/encryption';
 import { getEventsByStream } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
+import { getWebSocketClient } from '@/lib/ws';
 import { FILE_CHUNK_SIZE, MAX_FILE_SIZE } from '@/lib/constants';
 import { generateSymmetricKey, importAESKey, exportAESKey } from '@/lib/crypto/keys';
-import { encryptPayload } from '@/lib/crypto/encryption';
+import { encryptPayload, uint8ArrayToBase64 } from '@/lib/crypto/encryption';
 import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
 import type { EncryptedEvent, FileChunkPayload, FileMetadataPayload, EventPayload } from '@/types';
 
@@ -43,8 +44,21 @@ export async function startFileUpload(
   }
 
   const deviceId = getOrCreateDeviceId();
+  const wsClient = getWebSocketClient();
+  const userId = wsClient.getUserId() || undefined;
   const fileId = crypto.randomUUID();
   const totalChunks = Math.ceil(file.size / FILE_CHUNK_SIZE);
+
+  // Debug: Log identity info for troubleshooting encryption issues
+  const { loadIdentityKeyPair } = await import('@/lib/crypto/keys');
+  const identity = await loadIdentityKeyPair();
+  console.log('[Files] Starting file upload with key info:', {
+    deviceId,
+    wsUserId: userId?.substring(0, 16) + '...',
+    localIdentityPubKey: identity?.publicKeyHex?.substring(0, 16) + '...',
+    fileName: file.name,
+    fileSize: file.size,
+  });
   
   // Generate per-file encryption key
   const encryptionKey = await generateSymmetricKey();
@@ -77,7 +91,11 @@ export async function startFileUpload(
     deviceId,
     'file:metadata',
     metadataPayload,
+    userId,
   );
+
+  // Sync immediately to send the metadata event over WebSocket
+  await wsClient.syncPending();
 
   return upload;
 }
@@ -91,10 +109,12 @@ export async function uploadFileChunk(
   chunkData: Uint8Array,
 ): Promise<EncryptedEvent> {
   const deviceId = getOrCreateDeviceId();
+  const wsClient = getWebSocketClient();
+  const userId = wsClient.getUserId() || undefined;
   
   // Encrypt chunk with file encryption key
   const chunkPayload = {
-    data: btoa(String.fromCharCode(...chunkData)),
+    data: uint8ArrayToBase64(chunkData),
   };
   const { ciphertext, nonce } = await encryptPayload(chunkPayload as unknown as EventPayload, upload.encryptionKey);
   
@@ -107,16 +127,17 @@ export async function uploadFileChunk(
     .join('');
 
   // Combine nonce + ciphertext for encrypted_payload
+  // NOTE: nonce is base64 (from generateNonce), ciphertext is base64 (from encryptPayload)
+  // We need to decode both from base64, not hex!
   const nonceBytes = new Uint8Array(
     nonce.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
   );
-  const ciphertextBytes = new Uint8Array(
-    ciphertext.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
-  );
+  // FIX: ciphertext is BASE64, not HEX - decode properly
+  const ciphertextBytes = Uint8Array.from(atob(ciphertext), c => c.charCodeAt(0));
   const combined = new Uint8Array(nonceBytes.length + ciphertextBytes.length);
   combined.set(nonceBytes, 0);
   combined.set(ciphertextBytes, nonceBytes.length);
-  const encryptedPayload = btoa(String.fromCharCode(...combined));
+  const encryptedPayload = uint8ArrayToBase64(combined);
 
   const chunkPayload2: FileChunkPayload = {
     file_id: upload.fileId,
@@ -131,7 +152,11 @@ export async function uploadFileChunk(
     deviceId,
     'file:chunk',
     chunkPayload2,
+    userId,
   );
+
+  // Sync immediately to send the chunk event over WebSocket
+  await wsClient.syncPending();
 
   upload.uploadedChunks.add(chunkIndex);
   return event;
@@ -150,6 +175,33 @@ export async function receiveFileMetadata(
       return null;
     }
 
+    // Debug: Log key info for troubleshooting decryption issues
+    const { getCachedKeyInfo } = await import('@/lib/crypto/shared-key');
+    const { loadIdentityKeyPair } = await import('@/lib/crypto/keys');
+    const identity = await loadIdentityKeyPair();
+
+    const eventUserId = event.user_id;
+    const localIdentityPubKey = identity?.publicKeyHex;
+    const identitiesMatch = eventUserId === localIdentityPubKey;
+
+    console.log('[Files] Decrypting metadata with key info:', {
+      eventDeviceId: event.device_id,
+      eventUserId: eventUserId?.substring(0, 16) + '...',
+      localIdentityPubKey: localIdentityPubKey?.substring(0, 16) + '...',
+      cachedKeyPubKey: getCachedKeyInfo()?.publicKeyHex?.substring(0, 16) + '...',
+      identitiesMatch,
+      fullEventUserId: eventUserId, // Full ID for debugging
+      fullLocalIdentity: localIdentityPubKey, // Full ID for debugging
+    });
+
+    if (!identitiesMatch) {
+      console.error('[Files] IDENTITY MISMATCH! Event was encrypted with a different identity keypair.', {
+        eventUserId,
+        localIdentityPubKey,
+        hint: 'This usually means the pairing did not properly transfer the identity keypair.',
+      });
+    }
+
     const payload = await decryptPayload(
       event.encrypted_payload,
       sharedKey,
@@ -158,6 +210,14 @@ export async function receiveFileMetadata(
     return payload;
   } catch (error) {
     console.error('[Files] Failed to decrypt metadata:', error);
+    // Log additional context on decryption failure
+    const { loadIdentityKeyPair } = await import('@/lib/crypto/keys');
+    const identity = await loadIdentityKeyPair();
+    console.error('[Files] Decryption failed - identity context:', {
+      eventUserId: event.user_id,
+      localIdentityPubKey: identity?.publicKeyHex,
+      areEqual: event.user_id === identity?.publicKeyHex,
+    });
     return null;
   }
 }
@@ -227,14 +287,11 @@ export async function reassembleFile(
 
     // Get all chunks for this file
     const events = await getEventsByStream(`${FILES_STREAM_ID}:${fileId}`);
-    events.sort((a, b) => {
-      const payloadA = JSON.parse(atob(a.encrypted_payload)) as FileChunkPayload;
-      const payloadB = JSON.parse(atob(b.encrypted_payload)) as FileChunkPayload;
-      return payloadA.chunk_index - payloadB.chunk_index;
-    });
 
+    // Process chunks - no sorting needed as we use chunk_index for array placement
+    // Note: encrypted_payload cannot be parsed directly, must be decrypted first
     const chunks: Uint8Array[] = [];
-    
+
     for (const event of events) {
       if (event.type === 'file:chunk') {
         const chunk = await receiveFileChunk(event, fileEncryptionKey);

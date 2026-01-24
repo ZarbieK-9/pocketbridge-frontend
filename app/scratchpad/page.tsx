@@ -116,12 +116,13 @@ export default function ScratchpadPage() {
     }
   }, [sessionKeys]);
 
-  // Handle incoming Yjs updates
+  // Handle incoming Yjs updates (skip self-originated events)
   useEffect(() => {
-    if (lastEvent && lastEvent.type === 'scratchpad:op' && sessionKeys) {
+    // Skip events from this device to avoid processing our own updates
+    if (lastEvent && lastEvent.type === 'scratchpad:op' && sessionKeys && lastEvent.device_id !== deviceId) {
       handleIncomingUpdate(lastEvent);
     }
-  }, [lastEvent, sessionKeys]);
+  }, [lastEvent, sessionKeys, deviceId]);
 
   async function loadScratchpad() {
     if (!sessionKeys) return;

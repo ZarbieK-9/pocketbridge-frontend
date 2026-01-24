@@ -131,8 +131,10 @@ export async function getEventsByStream(
 /**
  * Get pending events (not yet acknowledged) - Phase 1
  * Uses lastAckDeviceSeq (single value for this device)
+ * @param lastAckDeviceSeq - Events with device_seq > this value are considered pending
+ * @param deviceId - Optional: Only return events from this device (recommended to avoid resending other devices' events)
  */
-export async function getPendingEvents(lastAckDeviceSeq: number): Promise<EncryptedEvent[]> {
+export async function getPendingEvents(lastAckDeviceSeq: number, deviceId?: string): Promise<EncryptedEvent[]> {
   const db = await getDatabase();
 
   return new Promise((resolve, reject) => {
@@ -146,7 +148,9 @@ export async function getPendingEvents(lastAckDeviceSeq: number): Promise<Encryp
       // Filter events that haven't been acknowledged
       // Only events from this device with device_seq > lastAckDeviceSeq
       const pending = allEvents.filter((event) => {
-        return event.device_seq > lastAckDeviceSeq;
+        const seqValid = event.device_seq > lastAckDeviceSeq;
+        const deviceValid = !deviceId || event.device_id === deviceId;
+        return seqValid && deviceValid;
       });
 
       // Sort by device_seq
@@ -276,5 +280,80 @@ export async function clearDatabase(): Promise<void> {
 
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(new Error('Failed to clear database'));
+  });
+}
+
+/**
+ * Delete events that don't belong to the current user (orphaned events)
+ * This handles events from old identity keypairs (e.g., before pairing)
+ * Returns the number of events deleted
+ */
+export async function deleteOrphanedEvents(currentUserId: string): Promise<number> {
+  const db = await getDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_EVENTS], 'readwrite');
+    const store = transaction.objectStore(STORE_EVENTS);
+    const request = store.openCursor();
+
+    let deletedCount = 0;
+
+    request.onsuccess = (event) => {
+      const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+      if (cursor) {
+        const eventRecord = cursor.value as EncryptedEvent;
+        // Delete events that belong to a different user
+        if (eventRecord.user_id && eventRecord.user_id !== currentUserId) {
+          cursor.delete();
+          deletedCount++;
+        }
+        cursor.continue();
+      }
+    };
+
+    transaction.oncomplete = () => resolve(deletedCount);
+    transaction.onerror = () => reject(new Error('Failed to delete orphaned events'));
+  });
+}
+
+/**
+ * Delete acknowledged events (events with device_seq <= lastAckDeviceSeq)
+ * This cleans up events that have been successfully synced
+ * Returns the number of events deleted
+ */
+export async function deleteAcknowledgedEvents(
+  lastAckDeviceSeq: number,
+  currentUserId: string
+): Promise<number> {
+  const db = await getDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_EVENTS], 'readwrite');
+    const store = transaction.objectStore(STORE_EVENTS);
+    const request = store.openCursor();
+
+    let deletedCount = 0;
+
+    request.onsuccess = (event) => {
+      const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+      if (cursor) {
+        const eventRecord = cursor.value as EncryptedEvent;
+        // Delete events that:
+        // 1. Belong to current user AND have been acknowledged (device_seq <= lastAckDeviceSeq)
+        // 2. Belong to a different user (orphaned)
+        const isAcknowledged =
+          eventRecord.user_id === currentUserId && eventRecord.device_seq <= lastAckDeviceSeq;
+        const isOrphaned = eventRecord.user_id !== currentUserId;
+
+        if (isAcknowledged || isOrphaned) {
+          cursor.delete();
+          deletedCount++;
+        }
+        cursor.continue();
+      }
+    };
+
+    transaction.oncomplete = () => resolve(deletedCount);
+    transaction.onerror = () => reject(new Error('Failed to delete acknowledged events'));
   });
 }

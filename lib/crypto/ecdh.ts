@@ -75,11 +75,15 @@ export async function computeECDHSecret(
 
 /**
  * Derive session keys using HKDF (RFC 5869)
- * 
+ *
  * HKDF(shared_secret, salt, info, length)
  * - salt: SHA256(client_ephemeral_pub || server_ephemeral_pub)
- * - info: "pocketbridge_session_v1"
+ * - info: direction-specific string to derive separate keys
  * - length: 32 bytes (AES-256)
+ *
+ * SECURITY: Derives separate keys for each direction to prevent reflection attacks.
+ * - clientKey: Used by client to encrypt messages TO server
+ * - serverKey: Used by client to decrypt messages FROM server
  */
 export async function deriveSessionKeys(
   sharedSecret: ArrayBuffer,
@@ -98,9 +102,6 @@ export async function deriveSessionKeys(
   combined.set(serverPubArray, clientPubArray.length);
   const saltBuffer = await crypto.subtle.digest('SHA-256', combined);
 
-  // Info = protocol identifier
-  const info = new TextEncoder().encode('pocketbridge_session_v1');
-
   // Import shared secret as key material
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
@@ -110,22 +111,36 @@ export async function deriveSessionKeys(
     ['deriveBits']
   );
 
-  // HKDF expand (32 bytes = AES-256 key)
-  const sessionKeyBits = await crypto.subtle.deriveBits(
+  // Derive client-to-server key
+  const clientToServerInfo = new TextEncoder().encode('pocketbridge_client_to_server_v1');
+  const clientKeyBits = await crypto.subtle.deriveBits(
     {
       name: 'HKDF',
       hash: 'SHA-256',
       salt: saltBuffer,
-      info: info,
+      info: clientToServerInfo,
     },
     keyMaterial,
     256 // 32 bytes
   );
 
-  // Import as AES-GCM key
-  const sessionKey = await crypto.subtle.importKey(
+  // Derive server-to-client key
+  const serverToClientInfo = new TextEncoder().encode('pocketbridge_server_to_client_v1');
+  const serverKeyBits = await crypto.subtle.deriveBits(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: saltBuffer,
+      info: serverToClientInfo,
+    },
+    keyMaterial,
+    256 // 32 bytes
+  );
+
+  // Import as AES-GCM keys
+  const clientKey = await crypto.subtle.importKey(
     'raw',
-    sessionKeyBits,
+    clientKeyBits,
     {
       name: 'AES-GCM',
       length: 256,
@@ -134,16 +149,32 @@ export async function deriveSessionKeys(
     ['encrypt', 'decrypt']
   );
 
-  const sessionKeyArray = new Uint8Array(sessionKeyBits);
-  const sessionKeyHex = Array.from(sessionKeyArray)
+  const serverKey = await crypto.subtle.importKey(
+    'raw',
+    serverKeyBits,
+    {
+      name: 'AES-GCM',
+      length: 256,
+    },
+    true,
+    ['encrypt', 'decrypt']
+  );
+
+  const clientKeyArray = new Uint8Array(clientKeyBits);
+  const clientKeyHex = Array.from(clientKeyArray)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+
+  const serverKeyArray = new Uint8Array(serverKeyBits);
+  const serverKeyHex = Array.from(serverKeyArray)
     .map(b => b.toString(16).padStart(2, '0'))
     .join('');
 
   return {
-    clientKey: sessionKey,
-    serverKey: sessionKey, // Same key for both directions (simplified)
-    clientKeyHex: sessionKeyHex,
-    serverKeyHex: sessionKeyHex,
+    clientKey,
+    serverKey,
+    clientKeyHex,
+    serverKeyHex,
   };
 }
 

@@ -15,6 +15,7 @@ export {
   importAESKey,
   exportAESKey,
   deriveSharedEncryptionKey,
+  clearCachedSharedKey,
 } from './keys';
 
 export { encryptPayload, decryptPayload } from './encryption';
@@ -60,18 +61,22 @@ export async function initializeCrypto(): Promise<{
       loadIdentityKeyPair,
     } = keysModule;
 
-    console.log('[initializeCrypto] Loading existing identity keypair...');
+    console.log('[initializeCrypto] Loading existing identity keypair from storage...');
     // Load or generate identity keypair
     let identityKeyPair = await loadIdentityKeyPair();
     
     if (!identityKeyPair) {
       console.log('[initializeCrypto] No existing keypair found, generating new one...');
       identityKeyPair = await generateIdentityKeyPair();
-      console.log('[initializeCrypto] Keypair generated, saving...');
+      console.log('[initializeCrypto] Keypair generated, saving to storage...');
       await saveIdentityKeyPair(identityKeyPair);
-      console.log('[initializeCrypto] Keypair saved successfully');
+      console.log('[initializeCrypto] Keypair saved successfully', {
+        publicKeyPrefix: identityKeyPair.publicKeyHex.substring(0, 16) + '...',
+      });
     } else {
-      console.log('[initializeCrypto] Existing keypair loaded');
+      console.log('[initializeCrypto] Existing keypair loaded from storage', {
+        publicKeyPrefix: identityKeyPair.publicKeyHex.substring(0, 16) + '...',
+      });
     }
 
     console.log('[initializeCrypto] Initialization complete!');

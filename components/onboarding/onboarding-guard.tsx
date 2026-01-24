@@ -64,15 +64,20 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
     const verifyOnboarding = async () => {
       try {
         const profile = await getOrCreateUserProfile(identityKeyPair);
-        if (!profile.onboardingCompleted && !hasRedirected) {
-          logger.info('Onboarding not completed (server-sourced), redirecting to onboarding page');
-          setHasRedirected(true);
-          setIsChecking(false);
-          router.push('/onboarding');
+        
+        // If user hasn't completed onboarding, redirect to onboarding
+        if (!profile.onboardingCompleted) {
+          if (!hasRedirected) {
+            logger.info('Onboarding not completed, redirecting to onboarding page');
+            setHasRedirected(true);
+            setIsChecking(false);
+            router.push('/onboarding');
+          }
           return;
         }
 
-        logger.info('User profile restored', {
+        // If onboarding is complete, allow access to all routes
+        logger.info('User profile loaded - onboarding complete', {
           userId: profile.userId.substring(0, 16) + '...',
           displayName: profile.displayName,
           onboardingCompleted: profile.onboardingCompleted,
@@ -81,6 +86,11 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
         logger.warn('Failed to resolve onboarding status', {
           error: error instanceof Error ? error.message : String(error),
         });
+        // On error, redirect to onboarding to be safe
+        if (!hasRedirected) {
+          setHasRedirected(true);
+          router.push('/onboarding');
+        }
       } finally {
         if (!cancelled) {
           setIsChecking(false);

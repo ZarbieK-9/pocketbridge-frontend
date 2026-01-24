@@ -74,6 +74,18 @@ export default function OnboardingPage() {
   }, [isInitialized, identityKeyPair, cryptoError, router]);
 
   const handleComplete = () => {
+    try {
+      // Set onboarding cookie for proxy to read on subsequent requests
+      const isProd = process.env.NODE_ENV === 'production';
+      const maxAge = 60 * 60 * 24 * 365; // 1 year
+      const cookieAttrs = [`path=/`, `max-age=${maxAge}`, `samesite=lax`];
+      if (isProd) cookieAttrs.push('secure');
+      // Note: httpOnly cannot be set from client JS
+      document.cookie = `onboardingCompleted=true; ${cookieAttrs.join('; ')}`;
+    } catch (err) {
+      // Non-fatal: continue to redirect even if cookie set fails
+      console.warn('Failed to set onboarding cookie', err);
+    }
     router.push('/');
   };
 

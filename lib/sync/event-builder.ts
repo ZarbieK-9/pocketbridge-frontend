@@ -12,7 +12,7 @@
  */
 
 import { generateUUIDv7 } from '@/lib/utils/uuid';
-import { encryptPayload } from '@/lib/crypto/encryption';
+import { encryptPayload, uint8ArrayToBase64 } from '@/lib/crypto/encryption';
 import { getEventQueue } from './queue';
 import { loadIdentityKeyPair, deriveSharedEncryptionKey } from '@/lib/crypto/keys';
 import type { EncryptedEvent, EventPayload, EventType } from '@/types';
@@ -28,10 +28,11 @@ export async function buildEvent(
   deviceId: string,
   type: EventType,
   payload: EventPayload,
+  userId?: string,
 ): Promise<EncryptedEvent> {
   const queue = getEventQueue();
 
-  // Load identity keypair for user_id
+  // Load identity keypair for encryption
   const identityKeyPair = await loadIdentityKeyPair();
   if (!identityKeyPair) {
     throw new Error('Identity keypair not found. Initialize crypto first.');
@@ -58,15 +59,13 @@ export async function buildEvent(
   combined.set(nonceBytes, 0);
   combined.set(ciphertextBytes, nonceBytes.length);
   
-  // Base64 encode the combined payload
-  const encryptedPayload = btoa(
-    String.fromCharCode(...combined)
-  );
+  // Base64 encode the combined payload using chunked approach
+  const encryptedPayload = uint8ArrayToBase64(combined);
 
   // Build event with Phase 1 structure
   const event: EncryptedEvent = {
     event_id: generateUUIDv7(),
-    user_id: identityKeyPair.publicKeyHex,
+    user_id: userId || identityKeyPair.publicKeyHex,
     device_id: deviceId,
     device_seq: queue.getNextSeq(),
     stream_id: streamId,
@@ -87,8 +86,9 @@ export async function createEvent(
   deviceId: string,
   type: EventType,
   payload: EventPayload,
+  userId?: string,
 ): Promise<EncryptedEvent> {
-  const event = await buildEvent(streamId, deviceId, type, payload);
+  const event = await buildEvent(streamId, deviceId, type, payload, userId);
   const queue = getEventQueue();
   await queue.enqueue(event);
   return event;

@@ -419,7 +419,9 @@ export async function updateUserProfileApi(
     return true;
   } catch (error) {
     clearTimeout(timeoutId);
-    logger.error('Failed to update user profile', error);
+    logger.error('Failed to update user profile', {
+      error: error instanceof Error ? error.message : String(error),
+    });
     return false;
   }
 }

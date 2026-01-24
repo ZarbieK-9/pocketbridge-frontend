@@ -7,18 +7,19 @@ import { NONCE_LENGTH } from "@/lib/constants"
 
 /**
  * Generate a cryptographically secure 96-bit nonce for AES-GCM encryption
- * Returns base64-encoded nonce string (12 bytes = 96 bits)
+ * Returns hex-encoded nonce string (12 bytes = 96 bits = 24 hex chars)
+ *
+ * IMPORTANT: This returns HEX (not base64) because the rest of the codebase
+ * expects hex-encoded nonces for parsing with parseInt(byte, 16)
  */
 export function generateNonce(): string {
   const nonceBuffer = new Uint8Array(NONCE_LENGTH)
   crypto.getRandomValues(nonceBuffer)
 
-  // Convert to base64
-  let binary = ""
-  for (let i = 0; i < nonceBuffer.length; i++) {
-    binary += String.fromCharCode(nonceBuffer[i])
-  }
-  return btoa(binary)
+  // Convert to hex (matching what encryptPayload and buildEvent expect)
+  return Array.from(nonceBuffer)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
 }
 
 /**

@@ -154,7 +154,22 @@ export interface DeviceStatusChange {
   timestamp: number;
 }
 
-export type SystemMessage = DevicePresence | DeviceStatusChange;
+export interface PairingCompleted {
+  type: 'pairing_completed';
+  payload: {
+    success: boolean;
+    linkedUserId?: string;
+  };
+}
+
+export interface PairingFailed {
+  type: 'pairing_failed';
+  payload: {
+    error: string;
+  };
+}
+
+export type SystemMessage = DevicePresence | DeviceStatusChange | PairingCompleted | PairingFailed;
 
 // WebSocket message types
 export interface WSMessage {
@@ -173,7 +188,10 @@ export interface WSMessage {
     | 'pong'
     | 'error'
     | 'device_status_changed'
-    | 'device_presence';
+    | 'device_presence'
+    | 'complete_pairing'
+    | 'pairing_completed'
+    | 'pairing_failed';
   payload: unknown;
 }
 

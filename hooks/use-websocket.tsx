@@ -41,25 +41,19 @@ export function useWebSocket({
       return; // Gracefully no-op until params are available
     }
 
-    // If we need to wait for crypto and it's not initialized, wait or throw
+    // If we need to wait for crypto and it's not initialized, return early
+    // The useEffect will re-trigger connect when cryptoInitialized changes
+    // NOTE: We don't use a polling loop here because cryptoInitialized is captured
+    // in the closure and won't update during the loop (stale closure bug)
     if (waitForCrypto && !cryptoInitialized) {
       if (cryptoError) {
         throw new Error(`Crypto initialization failed: ${cryptoError.message}`);
       }
-      // Wait a bit for crypto to initialize (with timeout)
-      const maxWait = 5000; // 5 seconds
-      const startTime = Date.now();
-      while (!cryptoInitialized && (Date.now() - startTime) < maxWait) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
-      
-      if (!cryptoInitialized) {
-        console.debug(logPrefix, 'connect aborted: crypto init timeout');
-        throw new Error('Crypto initialization timeout. Please ensure crypto is initialized before connecting.');
-      }
+      console.debug(logPrefix, 'connect deferred: waiting for crypto initialization');
+      return; // Effect will re-run when cryptoInitialized becomes true
     }
-    
-    console.debug(logPrefix, 'connecting', { url, deviceId, waitForCrypto });
+
+    console.debug(logPrefix, 'connecting', { url, deviceId, waitForCrypto, cryptoInitialized });
     const client = getWebSocketClient(url, deviceId);
     await client.connect();
   }, [url, deviceId, waitForCrypto, cryptoInitialized, cryptoError]);

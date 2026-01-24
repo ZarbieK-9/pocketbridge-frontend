@@ -7,6 +7,7 @@ const withBundleAnalyzer = bundleAnalyzer({
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone', // Required for Docker deployment
   reactStrictMode: true,
   typescript: {
     // Enforce type validation during builds
@@ -71,7 +72,7 @@ const nextConfig = {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-eval' 'unsafe-inline'", // 'unsafe-eval' needed for Next.js, 'unsafe-inline' for some libraries
+              "script-src 'self' 'unsafe-eval' 'unsafe-inline' https://va.vercel-scripts.com", // 'unsafe-eval' needed for Next.js, 'unsafe-inline' for some libraries, Vercel Analytics
               "style-src 'self' 'unsafe-inline'", // 'unsafe-inline' needed for Tailwind
               "img-src 'self' data: blob: https:",
               "font-src 'self' data:",

@@ -16,6 +16,41 @@ export interface PairingData {
 }
 
 /**
+ * Check if backend is reachable
+ */
+export async function checkBackendHealth(apiUrl: string): Promise<{ reachable: boolean; error?: string }> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    
+    const response = await fetch(`${apiUrl}/health`, {
+      method: 'GET',
+      mode: 'cors',
+      signal: controller.signal,
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (response.ok) {
+      return { reachable: true };
+    }
+    
+    return { 
+      reachable: false, 
+      error: `Backend returned ${response.status}: ${response.statusText}` 
+    };
+  } catch (error) {
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        return { reachable: false, error: 'Backend timeout - server not responding' };
+      }
+      return { reachable: false, error: `Network error: ${error.message}` };
+    }
+    return { reachable: false, error: 'Unknown error checking backend health' };
+  }
+}
+
+/**
  * Get the backend API URL
  */
 export function getBackendApiUrl(): string {
@@ -64,6 +99,13 @@ export async function generatePairingCode(data: PairingData): Promise<{ code: st
   
   // Store on backend
   const apiUrl = getBackendApiUrl();
+  
+  // Check backend health first
+  const healthCheck = await checkBackendHealth(apiUrl);
+  if (!healthCheck.reachable) {
+    throw new Error(`Backend not reachable: ${healthCheck.error}. Please check your network connection and backend status.`);
+  }
+  
   const fullUrl = `${apiUrl}/api/pairing/store`;
   console.log('[Pairing] Storing pairing code on backend:', { apiUrl, fullUrl, code });
   
@@ -125,7 +167,11 @@ export async function generatePairingCode(data: PairingData): Promise<{ code: st
       fullUrl,
     });
     if (error instanceof TypeError && (error.message.includes('fetch') || error.message.includes('Failed to fetch'))) {
-      throw new Error(`Network error: Cannot connect to backend at ${apiUrl}. Is the backend running? Check console for CORS errors.`);
+      const healthCheck = await checkBackendHealth(apiUrl).catch(() => ({ reachable: false, error: 'Health check failed' }));
+      if (!healthCheck.reachable) {
+        throw new Error(`Backend unreachable at ${apiUrl}. ${healthCheck.error || 'Network error'}. Please verify: 1) Backend is running, 2) Network connection is stable, 3) No firewall blocking the connection.`);
+      }
+      throw new Error(`Network error connecting to backend at ${apiUrl}. This may be a CORS issue. Check browser console for details.`);
     }
     throw error;
   }
@@ -197,29 +243,16 @@ export async function parsePairingCode(code: string, userId?: string): Promise<P
       privateKeyHex: result.data.privateKeyHex,
     };
 
-    // If identity keypair is present, save it
-    if (pairingData.privateKeyHex && pairingData.publicKeyHex) {
-      const { saveIdentityKeyPair } = await import('@/lib/crypto/keys');
-      const { loadIdentityKeyPair } = await import('@/lib/crypto/keys');
-      
-      // Check if we already have an identity keypair
-      const existing = await loadIdentityKeyPair();
-      
-      // Only save if we don't have one, or if it's different (user wants to switch accounts)
-      if (!existing || existing.publicKeyHex !== pairingData.publicKeyHex) {
-        await saveIdentityKeyPair({
-          publicKey: new Uint8Array(
-            pairingData.publicKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
-          ),
-          privateKey: new Uint8Array(
-            pairingData.privateKeyHex.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
-          ),
-          publicKeyHex: pairingData.publicKeyHex,
-          privateKeyHex: pairingData.privateKeyHex,
-        });
-        console.log('[Pairing] Identity keypair saved from pairing code');
-      }
-    }
+    // NOTE: Do NOT save the pairing device's identity keypair here!
+    // Device B should use its own identity for the WebSocket handshake.
+    // After pairing is complete, the pairing_completed handler will save this identity.
+    // This prevents the "cannot pair device with same user" error caused by both
+    // devices using the same identity before pairing is complete.
+    
+    console.log('[Pairing] Pairing data retrieved (identity keypair NOT saved yet - will be saved after completion)', {
+      initiatingDeviceId: pairingData.deviceId,
+      publicKeyPrefix: pairingData.publicKeyHex.substring(0, 16) + '...',
+    });
     
     return pairingData;
   } catch (error) {

@@ -21,7 +21,7 @@ import { useCrypto } from "@/hooks/use-crypto"
 import { useWebSocket } from "@/hooks/use-websocket"
 import { loadUserProfile, type UserProfile } from "@/lib/utils/user-profile"
 import { getOrCreateDeviceId } from "@/lib/utils/device"
-import { getWsUrl } from "@/lib/utils/storage"
+import { getWsUrl, loadPairedAccount, savePairedAccount, updatePairedDevices, type PairedAccountInfo } from "@/lib/utils/storage"
 import { useEffect, useState, useRef } from "react"
 import { logger } from "@/lib/utils/logger"
 import Link from "next/link"
@@ -33,6 +33,15 @@ interface PairedDevice {
   is_online: boolean;
   last_activity: string | null;
   updated_at: string;
+  last_seen?: number;
+}
+
+interface DevicesResponse {
+  devices: PairedDevice[];
+  count: number;
+  is_empty: boolean;
+  user_display_name?: string;
+  user_id: string;
 }
 
 export default function DashboardPage() {
@@ -48,11 +57,37 @@ export default function DashboardPage() {
   
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
+  const [pairedAccount, setPairedAccount] = useState<PairedAccountInfo | null>(null);
   const [isLoadingDevices, setIsLoadingDevices] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const lastDeviceCountRef = useRef<number>(0);
   const retryCountRef = useRef<number>(0);
   const isMountedRef = useRef<boolean>(true);
+
+  // Load persistent paired account info on mount
+  useEffect(() => {
+    const savedAccount = loadPairedAccount();
+    if (savedAccount) {
+      setPairedAccount(savedAccount);
+      // Also restore devices from persistent storage
+      if (savedAccount.devices && savedAccount.devices.length > 0) {
+        setPairedDevices(savedAccount.devices.map(d => ({
+          device_id: d.device_id,
+          device_name: d.device_name || 'Unknown Device',
+          user_id: savedAccount.userId,
+          is_online: d.is_online,
+          last_activity: null,
+          updated_at: new Date(d.last_seen).toISOString(),
+          last_seen: d.last_seen,
+        })));
+      }
+      logger.info('Loaded persistent paired account', {
+        userId: savedAccount.userId?.substring(0, 16) + '...',
+        displayName: savedAccount.displayName,
+        deviceCount: savedAccount.devices?.length || 0,
+      });
+    }
+  }, []);
 
   // Load user profile and verify onboarding
   useEffect(() => {
@@ -80,6 +115,23 @@ export default function DashboardPage() {
         return;
       }
 
+      // Check backend health before attempting to fetch devices
+      const { checkBackendHealth } = await import('@/lib/utils/pairing-code');
+      const healthCheck = await checkBackendHealth(apiUrl);
+      
+      if (!healthCheck.reachable) {
+        logger.warn('Backend health check failed', { error: healthCheck.error });
+        if (isMountedRef.current) {
+          setIsLoadingDevices(false);
+          const errorMessage = `Backend not reachable: ${healthCheck.error || 'Unknown error'}`;
+          setFetchError(errorMessage);
+          
+          // Log error for user visibility
+          logger.error('Cannot connect to backend', { error: healthCheck.error });
+        }
+        return;
+      }
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -102,23 +154,47 @@ export default function DashboardPage() {
         if (!isMountedRef.current) return;
 
         if (response.ok) {
-          const data = await response.json();
+          const data: DevicesResponse = await response.json();
           const devices = data.devices || [];
-          
+
           if (!isMountedRef.current) return;
-          
-          setPairedDevices(devices);
+
+          // Filter out the current device - only show other paired devices
+          const otherDevices = devices.filter((d: PairedDevice) => d.device_id !== deviceId);
+          setPairedDevices(otherDevices);
           setFetchError(null);
-          
+
+          // Update persistent paired account with latest device info and display name
+          if (otherDevices.length > 0 || data.user_display_name) {
+            const persistentDevices = otherDevices.map((d: PairedDevice) => ({
+              device_id: d.device_id,
+              device_name: d.device_name,
+              device_type: undefined as 'mobile' | 'desktop' | 'web' | undefined,
+              is_online: d.is_online,
+              last_seen: d.last_seen || Date.now(),
+            }));
+
+            // Update or create paired account info
+            const existingAccount = loadPairedAccount();
+            const updatedAccount: PairedAccountInfo = {
+              userId: data.user_id || identityKeyPair.publicKeyHex,
+              displayName: data.user_display_name || existingAccount?.displayName,
+              pairedAt: existingAccount?.pairedAt || Date.now(),
+              devices: persistentDevices,
+            };
+            savePairedAccount(updatedAccount);
+            setPairedAccount(updatedAccount);
+          }
+
           // Update profile with device count only if changed
           const profile = loadUserProfile();
-          if (profile && profile.deviceCount !== devices.length && devices.length !== lastDeviceCountRef.current) {
-            lastDeviceCountRef.current = devices.length;
+          if (profile && profile.deviceCount !== otherDevices.length && otherDevices.length !== lastDeviceCountRef.current) {
+            lastDeviceCountRef.current = otherDevices.length;
             const { updateUserProfile } = await import('@/lib/utils/user-profile');
-            await updateUserProfile({ deviceCount: devices.length }, identityKeyPair.publicKeyHex);
-            
+            await updateUserProfile({ deviceCount: otherDevices.length }, identityKeyPair.publicKeyHex);
+
             if (!isMountedRef.current) return;
-            
+
             const updatedProfile = loadUserProfile();
             if (updatedProfile) {
               setUserProfile(updatedProfile);
@@ -126,8 +202,8 @@ export default function DashboardPage() {
           }
 
           logger.info('Paired devices loaded', {
-            count: devices.length,
-            onlineCount: devices.filter((d: PairedDevice) => d.is_online).length,
+            count: otherDevices.length,
+            onlineCount: otherDevices.filter((d: PairedDevice) => d.is_online).length,
           });
         } else {
           logger.warn('Failed to fetch devices', { status: response.status });
@@ -193,6 +269,21 @@ export default function DashboardPage() {
       <Header title="Dashboard" description="Overview of your devices and recent activity" />
 
       <div className="p-6 space-y-6">
+        {/* Error Banner */}
+        {fetchError && (
+          <Card className="border-red-500 bg-red-50 dark:bg-red-950/20">
+            <CardContent className="pt-6">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="h-5 w-5 text-red-600 mt-0.5" />
+                <div className="flex-1">
+                  <h3 className="font-semibold text-red-900 dark:text-red-100">Connection Error</h3>
+                  <p className="text-sm text-red-700 dark:text-red-200 mt-1">{fetchError}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* User Profile Welcome */}
         {userProfile && userProfile.displayName && (
           <Card className="bg-primary/5 border-primary/20">
@@ -210,8 +301,8 @@ export default function DashboardPage() {
                       <>
                         <Check className="h-4 w-4 text-green-600" />
                         {pairedDevices.length > 0 
-                          ? `${pairedDevices.length} device(s) connected • ${pairedDevices.filter(d => d.is_online).length} online`
-                          : 'Ready to pair your devices'
+                          ? `${pairedDevices.length} other device(s) paired • ${pairedDevices.filter(d => d.is_online).length} online`
+                          : 'No other devices paired yet'
                         }
                       </>
                     ) : (
@@ -269,20 +360,20 @@ export default function DashboardPage() {
         </Card>
 
         {/* Pairing Status & Call to Action */}
-        {pairedDevices.length === 0 ? (
+        {pairedDevices.length === 0 && !pairedAccount ? (
           <Card className="border-2 border-dashed border-primary/50 bg-primary/5">
             <CardHeader>
-              <CardTitle className="text-base">No Devices Paired Yet</CardTitle>
-              <CardDescription>Pair your first device to get started</CardDescription>
+              <CardTitle className="text-base">No Other Devices Paired</CardTitle>
+              <CardDescription>Pair another device to sync across your workspace</CardDescription>
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground mb-4">
-                PocketBridge works best with multiple devices. Pair your smartphone, tablet, or another computer to sync across your workspace.
+                PocketBridge works by connecting multiple devices. Pair your smartphone, tablet, or another computer to start syncing.
               </p>
               <Button asChild className="gap-2">
                 <Link href="/pair">
                   <Plus className="h-4 w-4" />
-                  Pair Your First Device
+                  Pair Another Device
                 </Link>
               </Button>
             </CardContent>
@@ -292,28 +383,66 @@ export default function DashboardPage() {
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
                 <Smartphone className="h-5 w-5" />
-                Your Paired Devices ({pairedDevices.length})
+                Synced Account
+                {pairedAccount?.displayName && (
+                  <span className="text-primary font-semibold">
+                    — {pairedAccount.displayName}
+                  </span>
+                )}
               </CardTitle>
-              <CardDescription>Click to view details or manage devices</CardDescription>
+              <CardDescription>
+                {pairedDevices.length > 0
+                  ? `${pairedDevices.length} other device${pairedDevices.length > 1 ? 's' : ''} connected`
+                  : 'Paired account - waiting for other devices'}
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="space-y-3">
-                {pairedDevices.map((device: any) => (
-                  <div key={device.device_id} className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors">
-                    <div className="flex items-center gap-3 flex-1">
-                      <div className={`h-3 w-3 rounded-full ${device.is_online ? 'bg-green-500' : 'bg-gray-400'}`} />
-                      <div className="min-w-0">
-                        <p className="font-medium text-sm truncate">{device.device_name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {device.is_online ? 'Online now' : `Last seen ${new Date(device.last_activity || device.updated_at).toLocaleTimeString()}`}
-                        </p>
-                      </div>
-                    </div>
-                    <Button variant="ghost" size="sm" asChild>
-                      <Link href="/settings">Manage</Link>
-                    </Button>
+              {/* Show paired account status even if no other devices online */}
+              {pairedAccount && pairedDevices.length === 0 && (
+                <div className="mb-4 p-3 rounded-lg border bg-muted/50">
+                  <div className="flex items-center gap-2 text-sm">
+                    <Check className="h-4 w-4 text-green-500" />
+                    <span>Account synced since {new Date(pairedAccount.pairedAt).toLocaleDateString()}</span>
                   </div>
-                ))}
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Other devices will appear here when they come online
+                  </p>
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {pairedDevices.map((device: PairedDevice) => {
+                  const lastSeenTime = device.last_seen || device.last_activity || device.updated_at;
+                  const lastSeenDate = lastSeenTime ? new Date(lastSeenTime) : null;
+                  const lastSeenStr = lastSeenDate
+                    ? lastSeenDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    : 'Unknown';
+
+                  return (
+                    <div key={device.device_id} className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors">
+                      <div className="flex items-center gap-3 flex-1">
+                        {/* Status indicator with pulse animation for online */}
+                        <div className="relative">
+                          <div className={`h-3 w-3 rounded-full ${device.is_online ? 'bg-green-500' : 'bg-gray-400'}`} />
+                          {device.is_online && (
+                            <div className="absolute inset-0 h-3 w-3 rounded-full bg-green-500 animate-ping opacity-75" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-medium text-sm truncate">{device.device_name || 'Unknown Device'}</p>
+                          <p className="text-xs text-muted-foreground flex items-center gap-1">
+                            <span className={device.is_online ? 'text-green-600 font-medium' : ''}>
+                              {device.is_online ? '● Online' : `○ Last seen ${lastSeenStr}`}
+                            </span>
+                          </p>
+                        </div>
+                      </div>
+                      <Button variant="ghost" size="sm" asChild>
+                        <Link href="/settings">Manage</Link>
+                      </Button>
+                    </div>
+                  );
+                })}
               </div>
               <Button variant="outline" className="w-full mt-4 gap-2" asChild>
                 <Link href="/pair">

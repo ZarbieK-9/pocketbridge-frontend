@@ -6,7 +6,7 @@
  */
 
 import { STORAGE_KEYS } from '@/lib/constants';
-import { addEvent, getPendingEvents, getDatabase } from './db';
+import { addEvent, getPendingEvents, getDatabase, deleteAcknowledgedEvents, deleteOrphanedEvents } from './db';
 import { STORE_EVENTS } from '@/lib/constants';
 import type { EncryptedEvent, QueueStatus } from '@/types';
 
@@ -71,6 +71,33 @@ export class EventQueue {
   private saveLastAckDeviceSeq(): void {
     if (typeof window === 'undefined') return;
     localStorage.setItem(STORAGE_KEYS.LAST_ACK_SEQ, this.lastAckDeviceSeq.toString());
+  }
+
+  /**
+   * Set last acknowledged sequence from server and sync device sequence
+   * Used after session establishment to align local counters with server state
+   *
+   * IMPORTANT: Always trust the server's value. If server says 0 (e.g., after pairing reset),
+   * we MUST update our local state even if our local value is higher.
+   */
+  setLastAckFromServer(seq: number): void {
+    // Ensure seq is a number (defensive against string values from server)
+    const numSeq = typeof seq === 'string' ? parseInt(seq, 10) : seq;
+    if (isNaN(numSeq)) {
+      console.warn('[Queue] Invalid seq value:', seq);
+      return;
+    }
+
+    // ALWAYS trust the server's value - this is the authoritative state
+    // Previously we only updated if numSeq > lastAckDeviceSeq, but this caused issues
+    // when server resets to 0 (e.g., after pairing) and client has a higher local value
+    if (numSeq !== this.lastAckDeviceSeq) {
+      console.log(`[Queue] Server sync: updating lastAckDeviceSeq from ${this.lastAckDeviceSeq} to ${numSeq}`);
+      this.lastAckDeviceSeq = numSeq;
+      this.saveLastAckDeviceSeq();
+    }
+    // Keep device sequence ahead of lastAck
+    this.syncDeviceSeq(this.lastAckDeviceSeq);
   }
 
   /**
@@ -177,9 +204,10 @@ export class EventQueue {
 
   /**
    * Get all pending events that need to be synced
+   * Only returns events from this device to avoid resending other devices' events
    */
   async getPending(): Promise<EncryptedEvent[]> {
-    return await getPendingEvents(this.lastAckDeviceSeq);
+    return await getPendingEvents(this.lastAckDeviceSeq, this.getDeviceId());
   }
 
   /**
@@ -207,6 +235,14 @@ export class EventQueue {
   }
 
   /**
+   * Get last acknowledged device sequence (synchronous getter)
+   * This is the single source of truth for the device's sequence tracking
+   */
+  getLastAckDeviceSeq(): number {
+    return this.lastAckDeviceSeq;
+  }
+
+  /**
    * Reset queue (clear all acknowledgments)
    */
   reset(): void {
@@ -224,6 +260,44 @@ export class EventQueue {
     await clearDatabase();
     this.reset();
   }
+
+  /**
+   * Clean up acknowledged and orphaned events from IndexedDB
+   * This should be called periodically to prevent unbounded growth
+   * @param currentUserId - The current user's ID to identify orphaned events
+   * @returns Number of events deleted
+   */
+  async cleanup(currentUserId: string): Promise<number> {
+    try {
+      const deletedCount = await deleteAcknowledgedEvents(this.lastAckDeviceSeq, currentUserId);
+      if (deletedCount > 0) {
+        console.log(`[Queue] Cleaned up ${deletedCount} acknowledged/orphaned events`);
+      }
+      return deletedCount;
+    } catch (error) {
+      console.error('[Queue] Failed to cleanup events:', error);
+      return 0;
+    }
+  }
+
+  /**
+   * Clean up only orphaned events (events from different userId)
+   * Use this when you want to clean up events from old identity without affecting current events
+   * @param currentUserId - The current user's ID
+   * @returns Number of events deleted
+   */
+  async cleanupOrphaned(currentUserId: string): Promise<number> {
+    try {
+      const deletedCount = await deleteOrphanedEvents(currentUserId);
+      if (deletedCount > 0) {
+        console.log(`[Queue] Cleaned up ${deletedCount} orphaned events from old identity`);
+      }
+      return deletedCount;
+    } catch (error) {
+      console.error('[Queue] Failed to cleanup orphaned events:', error);
+      return 0;
+    }
+  }
 }
 
 /**
@@ -236,4 +310,23 @@ export function getEventQueue(): EventQueue {
     queueInstance = new EventQueue();
   }
   return queueInstance;
+}
+
+/**
+ * Reset the queue singleton and clear all sequence counters
+ * Call this when identity keypair changes (e.g., after pairing)
+ * to ensure device_seq starts fresh with the new identity
+ */
+export function resetEventQueue(): void {
+  if (queueInstance) {
+    queueInstance.reset();
+  }
+  // Also clear localStorage directly in case queue wasn't instantiated
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem('pocketbridge_device_seq');
+    localStorage.removeItem(STORAGE_KEYS.LAST_ACK_SEQ);
+    console.log('[Queue] Reset event queue and sequence counters for identity change');
+  }
+  // Reset singleton so next getEventQueue() creates fresh instance
+  queueInstance = null;
 }

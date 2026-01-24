@@ -1,0 +1,44 @@
+# Dependencies
+node_modules
+
+# Next.js build output
+.next
+out
+
+# Testing
+coverage
+.vitest
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Env files (we pass these as build args)
+.env
+.env.local
+.env.*.local
+
+# Git
+.git
+.gitignore
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test files
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/*.spec.tsx
+tests/
+
+# Documentation
+*.md
+!README.md

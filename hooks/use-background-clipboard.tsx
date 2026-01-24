@@ -11,6 +11,7 @@
 
 import { useEffect, useRef } from 'react';
 import { getBackgroundClipboardSync } from '@/lib/background/clipboard-sync';
+import { getOrCreateDeviceId } from '@/lib/utils/device';
 import type { SessionKeys, EncryptedEvent } from '@/types';
 
 interface UseBackgroundClipboardOptions {
@@ -35,13 +36,19 @@ export function useBackgroundClipboard({
   // Start/stop monitoring based on connection state
   useEffect(() => {
     const sync = syncRef.current;
+    let isMounted = true;
 
     if (isConnected && sessionKeys && !startedRef.current) {
-      // Start automatic monitoring
-      sync.start(sessionKeys, onClipboardReceived).catch((error) => {
-        console.error('[useBackgroundClipboard] Failed to start:', error);
-      });
-      startedRef.current = true;
+      // Start automatic monitoring (wait for completion before marking started)
+      sync.start(sessionKeys, onClipboardReceived)
+        .then(() => {
+          if (isMounted) {
+            startedRef.current = true;
+          }
+        })
+        .catch((error) => {
+          console.error('[useBackgroundClipboard] Failed to start:', error);
+        });
     } else if (!isConnected && startedRef.current) {
       // Stop monitoring when disconnected
       sync.stop();
@@ -50,6 +57,7 @@ export function useBackgroundClipboard({
 
     // Cleanup on unmount
     return () => {
+      isMounted = false;
       if (startedRef.current) {
         sync.stop();
         startedRef.current = false;
@@ -57,9 +65,13 @@ export function useBackgroundClipboard({
     };
   }, [isConnected, sessionKeys, onClipboardReceived]);
 
-  // Handle incoming clipboard events
+  // Handle incoming clipboard events (skip self-originated events)
   useEffect(() => {
-    if (lastEvent && lastEvent.type === 'clipboard:text' && sessionKeys) {
+    const deviceId = getOrCreateDeviceId();
+
+    // Skip events from this device to avoid processing our own clipboard changes
+    // Also check startedRef to ensure sync.start() has completed (sets sessionKeys internally)
+    if (lastEvent && lastEvent.type === 'clipboard:text' && sessionKeys && startedRef.current && lastEvent.device_id !== deviceId) {
       syncRef.current.handleIncomingEvent(lastEvent).catch((error) => {
         console.error('[useBackgroundClipboard] Failed to handle event:', error);
       });

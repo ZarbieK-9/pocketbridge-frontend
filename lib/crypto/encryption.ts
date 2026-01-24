@@ -12,6 +12,22 @@ import { generateNonce } from './nonce';
 import type { EventPayload } from '@/types';
 
 /**
+ * Convert Uint8Array to base64 string without stack overflow
+ * Uses chunked processing to handle large arrays (5MB+)
+ */
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  const CHUNK_SIZE = 0x8000; // 32KB chunks to avoid stack overflow
+  const chunks: string[] = [];
+
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    const chunk = bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length));
+    chunks.push(String.fromCharCode.apply(null, chunk as unknown as number[]));
+  }
+
+  return btoa(chunks.join(''));
+}
+
+/**
  * Encrypt a payload using AES-256-GCM
  * Returns combined nonce + ciphertext as base64 string
  */
@@ -40,9 +56,9 @@ export async function encryptPayload(
     payloadBuffer,
   );
 
-  // Convert to base64
+  // Convert to base64 using chunked approach to avoid stack overflow
   const ciphertextArray = new Uint8Array(ciphertextBuffer);
-  const ciphertext = btoa(String.fromCharCode(...ciphertextArray));
+  const ciphertext = uint8ArrayToBase64(ciphertextArray);
 
   return { ciphertext, nonce };
 }

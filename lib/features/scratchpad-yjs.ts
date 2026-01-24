@@ -24,9 +24,10 @@ async function getYjs() {
   return Y;
 }
 import { createEvent } from '@/lib/sync/event-builder';
-import { decryptPayload } from '@/lib/crypto/encryption';
+import { decryptPayload, uint8ArrayToBase64 } from '@/lib/crypto/encryption';
 import { getEventsByStream } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
+import { getWebSocketClient } from '@/lib/ws';
 import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
 import type { EncryptedEvent, ScratchpadUpdatePayload } from '@/types';
 
@@ -64,7 +65,7 @@ export async function getYjsText(): Promise<any> {
  * Convert Yjs update to base64 for transmission
  */
 export function encodeYjsUpdate(update: Uint8Array): string {
-  return btoa(String.fromCharCode(...update));
+  return uint8ArrayToBase64(update);
 }
 
 /**
@@ -82,6 +83,8 @@ export async function sendYjsUpdate(
   update: Uint8Array,
 ): Promise<EncryptedEvent> {
   const deviceId = getOrCreateDeviceId();
+  const wsClient = getWebSocketClient();
+  const userId = wsClient.getUserId() || undefined;
   
   const payload: ScratchpadUpdatePayload = {
     update: encodeYjsUpdate(update),
@@ -93,6 +96,7 @@ export async function sendYjsUpdate(
     deviceId,
     'scratchpad:op',
     payload,
+    userId,
   );
 }
 
