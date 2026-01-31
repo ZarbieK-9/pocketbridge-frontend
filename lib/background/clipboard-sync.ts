@@ -103,7 +103,8 @@ export class BackgroundClipboardSync {
    */
   async handleIncomingEvent(event: EncryptedEvent): Promise<void> {
     if (!this.sessionKeys) {
-      console.warn('[BackgroundClipboard] No session keys, cannot handle event');
+      // This is expected during initialization - events arrive before session keys are established
+      // The event is safely skipped; future events will work once connected
       return;
     }
 

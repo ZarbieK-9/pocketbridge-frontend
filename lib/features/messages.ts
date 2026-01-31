@@ -42,6 +42,9 @@ export async function sendSelfDestructMessage(
     userId,
   );
 
+  // Sync immediately to send the message over WebSocket
+  await wsClient.syncPending();
+
   // Set TTL on event metadata
   return {
     ...event,

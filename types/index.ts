@@ -52,6 +52,8 @@ export type EventType =
   | 'file:chunk'
   | 'file:metadata'
   | 'file:complete'
+  | 'file:chunk_ack'
+  | 'file:resume_request'
   | 'device:handshake'
   | 'device:ack';
 
@@ -100,6 +102,24 @@ export interface FileMetadataPayload {
   encryption_key?: string; // Base64-encoded file encryption key (encrypted with session key)
 }
 
+export interface FileCompletePayload {
+  file_id: string;
+  name: string;
+  completed_at: number; // Unix timestamp when transfer was completed
+}
+
+export interface FileChunkAckPayload {
+  file_id: string;
+  chunk_index: number;
+  received_at: number; // Unix timestamp when chunk was received
+}
+
+export interface FileResumeRequestPayload {
+  file_id: string;
+  missing_chunks: number[]; // Array of chunk indices that need to be re-sent
+  total_chunks: number; // For validation
+}
+
 // Union type for all payloads
 export type EventPayload =
   | ClipboardTextPayload
@@ -108,7 +128,10 @@ export type EventPayload =
   | MessageTextPayload
   | MessageSelfDestructPayload
   | FileChunkPayload
-  | FileMetadataPayload;
+  | FileMetadataPayload
+  | FileCompletePayload
+  | FileChunkAckPayload
+  | FileResumeRequestPayload;
 
 // Crypto key types
 export interface Ed25519KeyPair {
@@ -169,7 +192,26 @@ export interface PairingFailed {
   };
 }
 
-export type SystemMessage = DevicePresence | DeviceStatusChange | PairingCompleted | PairingFailed;
+export interface DeviceRevoked {
+  type: 'device_revoked';
+  payload: {
+    reason: string;
+    timestamp: number;
+  };
+}
+
+export interface ActivityEvent {
+  type: 'activity:event';
+  payload: {
+    event_id: string;
+    device_id: string;
+    type: 'file:metadata' | 'file:synced' | 'file:received' | 'message:sent';
+    created_at: number | string;
+    payload_size?: number;
+  };
+}
+
+export type SystemMessage = DevicePresence | DeviceStatusChange | PairingCompleted | PairingFailed | DeviceRevoked | ActivityEvent;
 
 // WebSocket message types
 export interface WSMessage {
@@ -191,7 +233,8 @@ export interface WSMessage {
     | 'device_presence'
     | 'complete_pairing'
     | 'pairing_completed'
-    | 'pairing_failed';
+    | 'pairing_failed'
+    | 'device_revoked';
   payload: unknown;
 }
 

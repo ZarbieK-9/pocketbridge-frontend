@@ -11,7 +11,7 @@ import { CheckCircle2, XCircle, KeyRound, Copy, Check, QrCode } from 'lucide-rea
 import { parsePairingCode, generatePairingCode, type PairingData } from '@/lib/utils/pairing-code';
 import { getBackendApiUrl } from '@/lib/utils/pairing-code';
 import { setWsUrl, getWsUrl, savePairedAccount } from '@/lib/utils/storage';
-import { getOrCreateDeviceId, getOrCreateDeviceName, updateDeviceName } from '@/lib/utils/device';
+import { getOrCreateDeviceId, getOrCreateDeviceName, updateDeviceName, setDeviceRole } from '@/lib/utils/device';
 import { useRouter } from 'next/navigation';
 import { useCrypto } from '@/hooks/use-crypto';
 import { useWebSocket } from '@/hooks/use-websocket';
@@ -165,6 +165,20 @@ export default function PairPage() {
             const remaining = Math.max(0, Math.floor((expires - now) / 1000));
             setTimeRemaining(remaining);
             logger.info('Pairing code generated', { expiresAt });
+
+            // Mark onboarding as complete for Device A (sharer)
+            // This ensures Device A can navigate away from /pair without being redirected to onboarding
+            try {
+              const { completeOnboarding } = await import('@/lib/utils/user-profile');
+              await completeOnboarding(identityKeyPair.publicKeyHex);
+              // Set device role to sharer
+              setDeviceRole('sharer');
+              logger.info('[SHARE MODE] Marked onboarding complete for sharer device');
+            } catch (onboardingError) {
+              logger.warn('[SHARE MODE] Failed to mark onboarding complete (non-blocking)', {
+                error: onboardingError instanceof Error ? onboardingError.message : String(onboardingError),
+              });
+            }
           } catch (error) {
             logger.error('Failed to generate pairing code', error);
             setResult({
@@ -286,6 +300,18 @@ export default function PairPage() {
           from: identityKeyPair.publicKeyHex,
           to: data.publicKeyHex,
         });
+
+        // BACKUP current identity before overwriting with Device A's identity
+        // This allows restoring original identity if device is revoked later
+        try {
+          const { backupIdentityKeyPair } = await import('@/lib/crypto/keys');
+          backupIdentityKeyPair();
+          logger.info('[PAIRING] Backed up current identity before pairing');
+        } catch (backupErr) {
+          logger.warn('[PAIRING] Failed to backup identity (non-blocking)', {
+            error: backupErr instanceof Error ? backupErr.message : String(backupErr),
+          });
+        }
 
         // Save Device A's identity keypair NOW
         try {
@@ -558,8 +584,11 @@ export default function PairPage() {
                 displayName: pairingData.deviceName, // Will be updated from backend
                 pairedAt: Date.now(),
                 devices: [],
+                deviceRole: 'receiver', // Device B (receiver) role
               });
-              logger.info('[PAIRING] Paired account info saved to localStorage');
+              // Set device role to receiver
+              setDeviceRole('receiver');
+              logger.info('[PAIRING] Paired account info saved to localStorage with receiver role');
             }
 
             // Small delay to ensure storage is flushed

@@ -67,6 +67,7 @@ function formatLastSeen(lastSeen: string | number): string {
 
 export function DevicePresenceList({ apiUrl, userId, className }: DevicePresenceListProps) {
   const [devices, setDevices] = useState<DevicePresence[]>([]);
+  const [userDisplayName, setUserDisplayName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const deviceId = getOrCreateDeviceId();
@@ -108,6 +109,7 @@ export function DevicePresenceList({ apiUrl, userId, className }: DevicePresence
         const sortedDevices = sortDevices(allDevices);
         if (isActive) {
           setDevices(sortedDevices);
+          setUserDisplayName(data.user_display_name || null);
           setError(null);
         }
       } catch (err) {
@@ -225,7 +227,7 @@ export function DevicePresenceList({ apiUrl, userId, className }: DevicePresence
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="font-medium truncate">
-                      {device.device_name}
+                      {userDisplayName || device.device_name}
                       {device.is_current && (
                         <span className="ml-2 text-xs text-muted-foreground">(This device)</span>
                       )}

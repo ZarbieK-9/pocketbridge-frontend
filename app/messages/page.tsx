@@ -2,28 +2,32 @@
 
 /**
  * Self-Destruct Messages Page - Phase 1
- * 
+ *
  * Send secure messages that expire after viewing
  * - TTL enforcement
  * - One-time view semantics
+ * - Browser notifications for incoming messages
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { useCrypto } from '@/hooks/use-crypto';
+import { useNotifications } from '@/hooks/use-notifications';
 import {
   sendSelfDestructMessage,
   getActiveMessages,
   deleteMessagePayload,
+  receiveSelfDestructMessage,
 } from '@/lib/features/messages';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
+import { loadUserProfile } from '@/lib/utils/user-profile';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/status-badge';
-import { Send, Clock, Trash2 } from 'lucide-react';
+import { Send, Clock, Trash2, Bell, BellOff } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { validateMessageText, validateTTL } from '@/lib/utils/validation';
 import { checkRateLimit } from '@/lib/utils/rate-limit';
@@ -33,6 +37,7 @@ import { ValidationError } from '@/lib/utils/errors';
 import { analytics } from '@/lib/utils/analytics';
 import { SyncIndicator } from '@/components/sync-indicator';
 import { toast } from '@/components/ui/toast';
+import type { EncryptedEvent } from '@/types';
 
 const WS_URL = config.wsUrl;
 
@@ -52,12 +57,23 @@ export default function MessagesPage() {
     deviceId,
     autoConnect: cryptoInitialized,
   });
+  const {
+    isSupported: notificationsSupported,
+    permission: notificationPermission,
+    isEnabled: notificationsEnabled,
+    requestPermission,
+    setEnabled: setNotificationsEnabled,
+    showMessageNotification,
+  } = useNotifications();
 
   const [messageText, setMessageText] = useState('');
   const [selectedTTL, setSelectedTTL] = useState('300');
   const [messages, setMessages] = useState<Array<{ eventId: string; text: string; expiresAt: number }>>([]);
   const [isSending, setIsSending] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'sending' | 'synced' | 'error'>('idle');
+
+  // Track the last processed event to prevent duplicate notifications
+  const lastProcessedEventRef = useRef<string | null>(null);
 
   // Track page view
   useEffect(() => {
@@ -77,11 +93,41 @@ export default function MessagesPage() {
   // Handle incoming messages
   useEffect(() => {
     if (lastEvent && lastEvent.type === 'message:self_destruct' && sessionKeys) {
+      const eventId = (lastEvent as EncryptedEvent).event_id;
+
+      // Prevent duplicate processing
+      if (lastProcessedEventRef.current === eventId) {
+        return;
+      }
+      lastProcessedEventRef.current = eventId;
+
+      // Check if message is from another device (not this one)
+      const isFromOtherDevice = (lastEvent as EncryptedEvent).device_id !== deviceId;
+
       loadMessages();
       setSyncStatus('synced');
       toast('New message received', 'success');
+
+      // Show browser notification for messages from other devices
+      if (isFromOtherDevice) {
+        // Get message preview for notification
+        receiveSelfDestructMessage(lastEvent as EncryptedEvent).then((message) => {
+          if (message) {
+            const profile = loadUserProfile();
+            const senderName = profile?.displayName || 'PocketBridge';
+            showMessageNotification(senderName, message.text, () => {
+              // Focus on the messages page when notification is clicked
+              window.focus();
+            });
+          }
+        }).catch((err) => {
+          logger.warn('Failed to decrypt message for notification', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
     }
-  }, [lastEvent, sessionKeys]);
+  }, [lastEvent, sessionKeys, deviceId, showMessageNotification]);
 
   async function loadMessages() {
     if (!sessionKeys) return;
@@ -157,6 +203,34 @@ export default function MessagesPage() {
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Self-Destruct Messages</h1>
         <div className="flex items-center gap-3">
+          {/* Notification toggle */}
+          {notificationsSupported && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={async () => {
+                if (notificationPermission === 'default') {
+                  await requestPermission();
+                } else if (notificationPermission === 'granted') {
+                  await setNotificationsEnabled(!notificationsEnabled);
+                }
+              }}
+              title={
+                notificationPermission === 'denied'
+                  ? 'Notifications blocked in browser settings'
+                  : notificationsEnabled
+                  ? 'Disable notifications'
+                  : 'Enable notifications'
+              }
+              disabled={notificationPermission === 'denied'}
+            >
+              {notificationsEnabled ? (
+                <Bell className="h-4 w-4 text-primary" />
+              ) : (
+                <BellOff className="h-4 w-4 text-muted-foreground" />
+              )}
+            </Button>
+          )}
           <SyncIndicator status={syncStatus} />
           <StatusBadge status={isConnected ? 'online' : 'offline'} />
         </div>

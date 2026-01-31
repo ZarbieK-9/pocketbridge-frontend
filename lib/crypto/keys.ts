@@ -252,17 +252,113 @@ export async function exportAESKey(key: CryptoKey): Promise<Uint8Array> {
 }
 
 /**
+ * Backup current identity keypair before pairing
+ * This allows restoring the original identity if the device is revoked
+ */
+export function backupIdentityKeyPair(): boolean {
+  if (typeof window === 'undefined') {
+    console.error('[backupIdentityKeyPair] Cannot backup: window is undefined');
+    return false;
+  }
+
+  const currentKeyData = localStorage.getItem(STORAGE_KEYS.IDENTITY_KEYPAIR);
+  if (!currentKeyData) {
+    console.log('[backupIdentityKeyPair] No identity to backup');
+    return false;
+  }
+
+  // Don't overwrite existing backup (preserve the original identity)
+  const existingBackup = localStorage.getItem(STORAGE_KEYS.IDENTITY_KEYPAIR_BACKUP);
+  if (existingBackup) {
+    console.log('[backupIdentityKeyPair] Backup already exists, preserving original');
+    return true;
+  }
+
+  localStorage.setItem(STORAGE_KEYS.IDENTITY_KEYPAIR_BACKUP, currentKeyData);
+  console.log('[backupIdentityKeyPair] Identity backed up successfully');
+  return true;
+}
+
+/**
+ * Restore the backed-up identity keypair (or generate new one)
+ * Used when device is revoked to return to unpaired state
+ */
+export async function restoreOrGenerateIdentity(): Promise<Ed25519KeyPair> {
+  if (typeof window === 'undefined') {
+    throw new Error('Cannot restore identity: window is undefined');
+  }
+
+  const backupData = localStorage.getItem(STORAGE_KEYS.IDENTITY_KEYPAIR_BACKUP);
+
+  if (backupData) {
+    try {
+      const keyData = JSON.parse(backupData);
+      const publicKey = new Uint8Array(
+        keyData.publicKeyHex.match(/.{1,2}/g)?.map((byte: string) => parseInt(byte, 16)) || []
+      );
+      const privateKey = new Uint8Array(
+        keyData.privateKeyHex.match(/.{1,2}/g)?.map((byte: string) => parseInt(byte, 16)) || []
+      );
+
+      const restoredKeyPair: Ed25519KeyPair = {
+        publicKey,
+        privateKey,
+        publicKeyHex: keyData.publicKeyHex,
+        privateKeyHex: keyData.privateKeyHex,
+      };
+
+      // Save as current identity
+      saveIdentityKeyPair(restoredKeyPair);
+
+      // Clear the backup since we've restored it
+      localStorage.removeItem(STORAGE_KEYS.IDENTITY_KEYPAIR_BACKUP);
+
+      console.log('[restoreOrGenerateIdentity] Restored backed-up identity', {
+        publicKeyPrefix: keyData.publicKeyHex.substring(0, 16) + '...',
+      });
+
+      return restoredKeyPair;
+    } catch (error) {
+      console.error('[restoreOrGenerateIdentity] Failed to parse backup, generating new identity:', error);
+    }
+  }
+
+  // No backup found or failed to parse, generate new identity
+  console.log('[restoreOrGenerateIdentity] No backup found, generating new identity');
+  const newKeyPair = await generateIdentityKeyPair();
+  saveIdentityKeyPair(newKeyPair);
+  return newKeyPair;
+}
+
+/**
+ * Clear the identity backup (call after successful pairing if desired)
+ */
+export function clearIdentityBackup(): void {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(STORAGE_KEYS.IDENTITY_KEYPAIR_BACKUP);
+  console.log('[clearIdentityBackup] Identity backup cleared');
+}
+
+/**
+ * Check if device has a backed-up identity
+ */
+export function hasIdentityBackup(): boolean {
+  if (typeof window === 'undefined') return false;
+  return localStorage.getItem(STORAGE_KEYS.IDENTITY_KEYPAIR_BACKUP) !== null;
+}
+
+/**
  * Derive a shared encryption key from identity keypair
- * 
+ *
  * All devices with the same identity keypair will derive the same encryption key.
  * This allows cross-device event encryption/decryption.
- * 
+ *
  * Uses HKDF with:
  * - Input: Identity private key (32 bytes)
  * - Salt: SHA256("pocketbridge_shared_key_v1" || publicKeyHex)
  * - Info: "pocketbridge_event_encryption_v1"
  * - Output: 32 bytes (AES-256 key)
- * 
+ *
  * The key is cached per public key to avoid repeated derivation.
  */
 export async function deriveSharedEncryptionKey(

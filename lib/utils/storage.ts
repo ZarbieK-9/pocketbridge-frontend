@@ -28,6 +28,7 @@ export interface PairedAccountInfo {
   displayName?: string;     // User's display name
   pairedAt: number;         // Timestamp when paired
   devices: PairedDeviceInfo[];
+  deviceRole?: 'sharer' | 'receiver'; // Role of this device in the pairing
 }
 
 export interface PairedDeviceInfo {

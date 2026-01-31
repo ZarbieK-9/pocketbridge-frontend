@@ -89,6 +89,7 @@ export class WebSocketClient {
   private handshakeRetries: number = 0;
   private maxHandshakeRetries: number = 3; // Max handshake retries
   private connectInProgress: boolean = false; // Guard against concurrent connect() calls
+  private pendingEventsBuffer: EncryptedEvent[] = []; // Buffer for events received before session keys are ready
 
   constructor(url: string, deviceId: string) {
     this.url = url;
@@ -577,6 +578,18 @@ export class WebSocketClient {
     this.resetHandshakeRetries(); // Reset handshake retries on successful connection
     this.startHeartbeat();
 
+    // Process any buffered events that arrived before session keys were ready
+    if (this.pendingEventsBuffer.length > 0) {
+      logger.info('[HANDSHAKE] Processing buffered events', {
+        count: this.pendingEventsBuffer.length,
+      });
+      const bufferedEvents = [...this.pendingEventsBuffer];
+      this.pendingEventsBuffer = []; // Clear buffer before processing to avoid infinite loop
+
+      // Process buffered events asynchronously (fire-and-forget pattern)
+      this.processBufferedEvents(bufferedEvents);
+    }
+
     // Request replay if needed
     const lastAck = queue.getLastAckDeviceSeq();
     if (lastAck > 0) {
@@ -585,6 +598,22 @@ export class WebSocketClient {
 
     // Sync pending events from offline queue
     this.syncPending();
+  }
+
+  /**
+   * Process buffered events that arrived before session keys were ready
+   */
+  private async processBufferedEvents(events: EncryptedEvent[]): Promise<void> {
+    for (const event of events) {
+      try {
+        await this.handleIncomingEvent(event);
+      } catch (error) {
+        logger.error('[processBufferedEvents] Error processing buffered event', error, {
+          eventId: event.event_id,
+          type: event.type,
+        });
+      }
+    }
   }
 
   /**
@@ -883,6 +912,10 @@ export class WebSocketClient {
         case 'device_presence':
           this.emitSystem((message.payload || message) as SystemMessage);
           break;
+        case 'device_revoked':
+          // Device has been revoked by another device - restore original identity
+          await this.handleDeviceRevoked(message.payload as { reason?: string; timestamp?: number });
+          break;
         case 'error':
           logger.error('Server error', undefined, { payload: message.payload });
           this.handleError(new Error(`Server error: ${JSON.stringify(message.payload)}`));
@@ -908,10 +941,14 @@ export class WebSocketClient {
     });
 
     if (!this.sessionKeys) {
-      logger.error('No session keys, cannot handle event - EVENT DROPPED', {
+      // Buffer events that arrive before session keys are ready
+      // They will be processed once the session is established
+      logger.warn('[handleIncomingEvent] No session keys yet, buffering event for later processing', {
         type: event.type,
         eventId: event.event_id,
+        bufferSize: this.pendingEventsBuffer.length + 1,
       });
+      this.pendingEventsBuffer.push(event);
       return;
     }
 
@@ -1137,6 +1174,90 @@ export class WebSocketClient {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+  }
+
+  /**
+   * Handle device revoked message
+   * Restores original identity and reloads the app
+   *
+   * Note: Device already completed onboarding with its original identity,
+   * so we just restore it and reload - no need to onboard again.
+   */
+  private async handleDeviceRevoked(message: { reason?: string; timestamp?: number }): Promise<void> {
+    logger.warn('Device has been revoked', {
+      reason: message.reason || 'No reason provided',
+      timestamp: message.timestamp,
+    });
+
+    // Stop reconnection attempts
+    this.stopReconnect();
+    this.stopHeartbeat();
+
+    // Clear session state
+    this.sessionKeys = null;
+    this.handshakeState = {};
+
+    // Restore original identity or generate new one
+    try {
+      const { restoreOrGenerateIdentity } = await import('@/lib/crypto/keys');
+      const restoredIdentity = await restoreOrGenerateIdentity();
+      this.userId = restoredIdentity.publicKeyHex;
+      this.identityKeyPair = restoredIdentity;
+
+      logger.info('Identity restored after revocation', {
+        newUserId: this.userId.substring(0, 16) + '...',
+      });
+    } catch (error) {
+      logger.error('Failed to restore identity after revocation', error);
+    }
+
+    // Clear event queue (remove events from the paired identity)
+    // This clears events that were encrypted with the shared identity
+    try {
+      const queue = getEventQueue();
+      await queue.clear();
+      logger.info('Event queue cleared after revocation');
+    } catch (error) {
+      logger.error('Failed to clear event queue after revocation', error);
+    }
+
+    // Clear cached user profile so it gets re-fetched for the restored identity
+    // The original identity's profile still exists on the server
+    try {
+      const { clearUserProfile } = await import('@/lib/utils/user-profile');
+      clearUserProfile();
+      logger.info('Cached user profile cleared (will re-fetch for restored identity)');
+    } catch (error) {
+      logger.error('Failed to clear cached user profile after revocation', error);
+    }
+
+    // Emit system message for UI updates
+    this.emitSystem({
+      type: 'device_revoked',
+      payload: {
+        reason: message.reason || 'Device has been removed',
+        timestamp: message.timestamp || Date.now(),
+      },
+    });
+
+    // Update status to disconnected
+    this.updateStatus('disconnected');
+
+    // Close WebSocket connection
+    if (this.ws) {
+      this.ws.close(1000, 'Device revoked');
+      this.ws = null;
+    }
+
+    // Reload the page to re-initialize with restored identity
+    // The app will fetch the profile for the original identity from the server
+    // (which already has onboardingCompleted = true)
+    if (typeof window !== 'undefined') {
+      setTimeout(() => {
+        logger.info('Reloading app after device revocation to use restored identity');
+        window.location.reload();
+      }, 500);
     }
   }
 
@@ -1368,6 +1489,7 @@ export class WebSocketClient {
     this.stopHeartbeat();
     this.updateStatus('disconnected');
     this.sessionKeys = null;
+    this.pendingEventsBuffer = []; // Clear buffered events on disconnect
     
     // Only schedule reconnect if socket is fully closed and not a session rotation
     if (closeCode !== 1001) {
@@ -1458,6 +1580,13 @@ export class WebSocketClient {
    */
   getSessionKeys(): SessionKeys | null {
     return this.sessionKeys;
+  }
+
+  /**
+   * Get session expiration timestamp
+   */
+  getSessionExpiresAt(): number | null {
+    return this.sessionExpiresAt;
   }
 }
 

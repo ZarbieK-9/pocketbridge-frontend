@@ -76,10 +76,14 @@ export function OnboardingFlow({ userId, currentDeviceName, onComplete }: Onboar
     setCompletionError(null);
     
     try {
-      // Validate and save device name
-      const validatedName = validateDeviceName(deviceName);
-      updateDeviceName(validatedName);
-      
+      // Validate device name
+      const validatedDeviceName = validateDeviceName(deviceName);
+
+      // If display name is set, use it as the device name for consistency
+      // This ensures "Welcome back, X" and "Device connected: X" show the same name
+      const effectiveDeviceName = displayName.trim() || validatedDeviceName;
+      updateDeviceName(effectiveDeviceName);
+
       // Ensure profile exists first
       let existing = loadUserProfile();
       if (!existing || existing.userId !== userId) {
@@ -110,7 +114,7 @@ export function OnboardingFlow({ userId, currentDeviceName, onComplete }: Onboar
       
       // Mark onboarding as complete (saves locally, syncs to server in background)
       await completeOnboarding(userId);
-      logger.info('Onboarding completed successfully', { userId, deviceName, displayName });
+      logger.info('Onboarding completed successfully', { userId, deviceName: effectiveDeviceName, displayName });
       
       setStep('complete');
       // Auto-redirect after 1.5 seconds

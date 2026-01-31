@@ -30,6 +30,7 @@ export function useWebSocket({
   const [lastSystemMessage, setLastSystemMessage] = useState<SystemMessage | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [sessionKeys, setSessionKeys] = useState<SessionKeys | null>(null);
+  const [sessionExpiresAt, setSessionExpiresAt] = useState<number | null>(null);
   
   // Get crypto initialization state if we need to wait for it
   const { isInitialized: cryptoInitialized, error: cryptoError } = useCrypto();
@@ -91,12 +92,15 @@ export function useWebSocket({
     const unsubStatus = client.onStatus((newStatus) => {
       console.debug(logPrefix, 'status change', { newStatus });
       setStatus(newStatus);
-      // Update session keys when connected
+      // Update session keys and expiration when connected
       if (newStatus === 'connected') {
         const keys = client.getSessionKeys();
         setSessionKeys(keys);
+        const expiresAt = client.getSessionExpiresAt();
+        setSessionExpiresAt(expiresAt);
       } else {
         setSessionKeys(null);
+        setSessionExpiresAt(null);
       }
     });
     const unsubEvent = client.onEvent((event) => {
@@ -134,6 +138,7 @@ export function useWebSocket({
     lastEvent,
     error,
     sessionKeys,
+    sessionExpiresAt,
     connect,
     disconnect,
     sendEvent,

@@ -2,6 +2,7 @@ import type React from "react"
 import type { Metadata, Viewport } from "next"
 import { Inter } from "next/font/google"
 import { Analytics } from "@vercel/analytics/next"
+import { ThemeProvider } from "@/components/theme-provider"
 import { ServiceWorkerRegister } from "@/components/service-worker-register"
 import { BackgroundSync } from "@/components/background-sync"
 import { ErrorBoundary } from "@/components/error-boundary"
@@ -71,7 +72,7 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <script
           type="application/ld+json"
@@ -89,18 +90,25 @@ export default function RootLayout({
         />
       </head>
       <body className={`${inter.className} font-sans antialiased`}>
-        <ErrorBoundary>
-          <ServiceWorkerRegister />
-          <BackgroundSync />
-          <WebVitalsReporter />
-          <UserProfileRestore />
-          <OnboardingGuard>
-            {children}
-          </OnboardingGuard>
-          <OfflineIndicator />
-          <ToastContainer />
-          <Analytics />
-        </ErrorBoundary>
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="system"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <ErrorBoundary>
+            <ServiceWorkerRegister />
+            <BackgroundSync />
+            <WebVitalsReporter />
+            <UserProfileRestore />
+            <OnboardingGuard>
+              {children}
+            </OnboardingGuard>
+            <OfflineIndicator />
+            <ToastContainer />
+            <Analytics />
+          </ErrorBoundary>
+        </ThemeProvider>
       </body>
     </html>
   )

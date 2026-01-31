@@ -55,3 +55,21 @@ export function updateDeviceName(name: string): void {
     localStorage.setItem(STORAGE_KEYS.DEVICE_NAME, name)
   }
 }
+
+export function getDeviceRole(): 'sharer' | 'receiver' | null {
+  if (typeof window === "undefined") return null
+  const role = localStorage.getItem(STORAGE_KEYS.DEVICE_ROLE)
+  return role as 'sharer' | 'receiver' | null
+}
+
+export function setDeviceRole(role: 'sharer' | 'receiver'): void {
+  if (typeof window !== "undefined") {
+    localStorage.setItem(STORAGE_KEYS.DEVICE_ROLE, role)
+  }
+}
+
+export function clearDeviceRole(): void {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(STORAGE_KEYS.DEVICE_ROLE)
+  }
+}

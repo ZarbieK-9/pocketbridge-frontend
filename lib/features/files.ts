@@ -15,7 +15,7 @@ import { decryptPayload } from '@/lib/crypto/encryption';
 import { getEventsByStream } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getWebSocketClient } from '@/lib/ws';
-import { FILE_CHUNK_SIZE, MAX_FILE_SIZE } from '@/lib/constants';
+import { MAX_FILE_SIZE, getOptimalChunkSize } from '@/lib/constants';
 import { generateSymmetricKey, importAESKey, exportAESKey } from '@/lib/crypto/keys';
 import { encryptPayload, uint8ArrayToBase64 } from '@/lib/crypto/encryption';
 import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
@@ -47,7 +47,10 @@ export async function startFileUpload(
   const wsClient = getWebSocketClient();
   const userId = wsClient.getUserId() || undefined;
   const fileId = crypto.randomUUID();
-  const totalChunks = Math.ceil(file.size / FILE_CHUNK_SIZE);
+
+  // Use dynamic chunk size based on file size for optimal speed
+  const chunkSize = getOptimalChunkSize(file.size);
+  const totalChunks = Math.ceil(file.size / chunkSize);
 
   // Debug: Log identity info for troubleshooting encryption issues
   const { loadIdentityKeyPair } = await import('@/lib/crypto/keys');
@@ -58,6 +61,9 @@ export async function startFileUpload(
     localIdentityPubKey: identity?.publicKeyHex?.substring(0, 16) + '...',
     fileName: file.name,
     fileSize: file.size,
+    fileSizeMB: (file.size / (1024 * 1024)).toFixed(2),
+    chunkSizeMB: (chunkSize / (1024 * 1024)).toFixed(0),
+    totalChunks,
   });
   
   // Generate per-file encryption key

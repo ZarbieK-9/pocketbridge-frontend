@@ -135,14 +135,15 @@ export async function receiveYjsUpdate(
 }
 
 /**
- * Apply Yjs update to document
+ * Apply Yjs update to document (from remote)
  */
 export async function applyYjsUpdate(update: Uint8Array): Promise<void> {
   if (!yjsDoc) {
     await initYjsDoc();
   }
   const Yjs = await getYjs();
-  Yjs.applyUpdate(yjsDoc!, update);
+  // Apply with 'remote' origin to avoid triggering onYjsUpdate send loop
+  Yjs.applyUpdate(yjsDoc!, update, 'remote');
 }
 
 /**
@@ -157,44 +158,54 @@ export async function getYjsTextContent(): Promise<string> {
  * Set text in Yjs document (replaces all)
  */
 export async function setYjsTextContent(content: string): Promise<void> {
+  if (!yjsDoc) {
+    await initYjsDoc();
+  }
   const text = await getYjsText();
   const current = text.toString();
-  
+
   if (current === content) {
     return; // No change
   }
 
-  // Delete all and insert new content
-  text.delete(0, current.length);
-  text.insert(0, content);
+  // Wrap in transaction with 'local' origin so onYjsUpdate handler fires
+  yjsDoc!.transact(() => {
+    text.delete(0, current.length);
+    text.insert(0, content);
+  }, 'local');
 }
 
 /**
  * Rebuild Yjs document from all events
+ * NOTE: This applies updates to the existing document instead of replacing it,
+ * to preserve any registered event handlers (onYjsUpdate callbacks)
  */
 export async function rebuildYjsFromEvents(): Promise<string> {
   try {
-    const events = await getEventsByStream(SCRATCHPAD_STREAM_ID);
+    // Ensure we have a document to work with
+    if (!yjsDoc) {
+      await initYjsDoc();
+    }
+
+    // Get current user ID to filter events (avoids loading stale events from old identity)
+    const wsClient = getWebSocketClient();
+    const userId = wsClient.getUserId();
+
+    const events = await getEventsByStream(SCRATCHPAD_STREAM_ID, userId || undefined);
     events.sort((a, b) => a.stream_seq - b.stream_seq);
 
-    // Initialize fresh document
     const Yjs = await getYjs();
-    const doc = new Yjs.Doc();
-    const text = doc.getText('content');
 
-    // Apply all updates in order
+    // Apply all updates to existing document (preserves handlers)
     for (const event of events) {
       const update = await receiveYjsUpdate(event);
       if (update) {
-        Yjs.applyUpdate(doc, update);
+        // Apply with 'remote' origin to avoid triggering send loop
+        Yjs.applyUpdate(yjsDoc!, update, 'remote');
       }
     }
 
-    // Store document
-    yjsDoc = doc;
-    yjsText = text;
-
-    return text.toString();
+    return yjsText!.toString();
   } catch (error) {
     console.error('[Scratchpad] Failed to rebuild Yjs document:', error);
     return '';

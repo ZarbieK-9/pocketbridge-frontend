@@ -5,6 +5,7 @@
 "use client"
 
 import * as React from "react"
+import { useTheme } from "next-themes"
 import { MainLayout } from "@/components/layout/main-layout"
 import { Header } from "@/components/layout/header"
 import { Button } from "@/components/ui/button"
@@ -13,11 +14,13 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { PWAInstaller } from "@/components/pwa-installer"
 import { DevicePresenceList } from "@/components/device-presence"
 import { SessionTimeout } from "@/components/session-timeout"
 import { useCrypto } from "@/hooks/use-crypto"
 import { useWebSocket } from "@/hooks/use-websocket"
+import { useNotifications } from "@/hooks/use-notifications"
 import { getOrCreateDeviceId, getOrCreateDeviceName, updateDeviceName } from "@/lib/utils/device"
 import { getWsUrl } from "@/lib/utils/storage"
 import { config } from "@/lib/config"
@@ -25,37 +28,52 @@ import { validateDeviceName } from "@/lib/utils/validation"
 import { logger } from "@/lib/utils/logger"
 import { ValidationError } from "@/lib/utils/errors"
 import { downloadBackup, importData, checkDataIntegrity, clearAllData } from "@/lib/utils/data-persistence"
+import { clearUserProfile } from "@/lib/utils/user-profile"
 import { analytics } from "@/lib/utils/analytics"
 
 export default function SettingsPage() {
   const { identityKeyPair, isInitialized } = useCrypto();
   const deviceId = getOrCreateDeviceId();
   const [deviceName, setDeviceName] = React.useState('');
-  const [sessionExpiresAt, setSessionExpiresAt] = React.useState<Date | null>(null);
-  
+  const [isDeletingAccount, setIsDeletingAccount] = React.useState(false);
+
+  // Theme settings
+  const { theme, setTheme } = useTheme();
+
+  // Notification settings
+  const {
+    isSupported: notificationsSupported,
+    permission: notificationPermission,
+    isEnabled: notificationsEnabled,
+    requestPermission,
+    setEnabled: setNotificationsEnabled,
+  } = useNotifications();
+
   // Get WebSocket URL and derive API URL
   const wsUrl = getWsUrl() || config.wsUrl;
   const apiUrl = config.apiUrl;
   const userId = identityKeyPair?.publicKeyHex || null;
 
   // Get session expiration from WebSocket client
-  const { sessionKeys } = useWebSocket({
+  const { sessionKeys, sessionExpiresAt: wsSessionExpiresAt } = useWebSocket({
     url: wsUrl,
     deviceId,
     autoConnect: isInitialized,
   });
 
+  // Convert session expiration timestamp to Date
+  const sessionExpiresAt = React.useMemo(() => {
+    if (wsSessionExpiresAt) {
+      return new Date(wsSessionExpiresAt);
+    }
+    // Fallback to 24 hours from now if not available yet
+    return sessionKeys ? new Date(Date.now() + 24 * 60 * 60 * 1000) : null;
+  }, [wsSessionExpiresAt, sessionKeys]);
+
   React.useEffect(() => {
     const currentDeviceName = getOrCreateDeviceName();
     setDeviceName(currentDeviceName);
   }, []);
-
-  React.useEffect(() => {
-    // Session expiration is managed by the WebSocket client
-    // For now, we'll show a placeholder (24 hours from now)
-    // In a real implementation, this would come from the session_established message
-    setSessionExpiresAt(new Date(Date.now() + 24 * 60 * 60 * 1000));
-  }, [sessionKeys]);
 
   const handleDeviceNameChange = async (newName: string) => {
     try {
@@ -176,6 +194,61 @@ export default function SettingsPage() {
     }
   };
 
+  const deleteAccount = async () => {
+    if (!userId) {
+      alert('No user identity available. Cannot delete account.');
+      return;
+    }
+
+    const confirmed = confirm(
+      'Are you sure you want to delete your account?\n\n' +
+      'This will permanently delete:\n' +
+      '- All your devices\n' +
+      '- All synced data\n' +
+      '- Your user profile\n\n' +
+      'This action cannot be undone!'
+    );
+
+    if (!confirmed) return;
+
+    // Double confirmation for destructive action
+    const doubleConfirmed = confirm(
+      'This is your final warning.\n\n' +
+      'Type "DELETE" in your mind and click OK to permanently delete your account.'
+    );
+
+    if (!doubleConfirmed) return;
+
+    setIsDeletingAccount(true);
+    try {
+      const response = await fetch(`${apiUrl}/api/user`, {
+        method: 'DELETE',
+        headers: {
+          'X-User-ID': userId,
+        },
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to delete account');
+      }
+
+      // Clear all local data
+      await clearAllData();
+      clearUserProfile();
+      localStorage.removeItem('pocketbridge_identity_keypair');
+
+      analytics.track('account_deleted');
+      alert('Your account has been deleted. You will be redirected to the home page.');
+      window.location.href = '/';
+    } catch (error) {
+      logger.error('Failed to delete account', error);
+      alert('Failed to delete account. Please try again.');
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
   return (
     <MainLayout>
       <Header title="Settings" description="Manage your PocketBridge preferences" />
@@ -234,6 +307,32 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
+        {/* Appearance */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Appearance</CardTitle>
+            <CardDescription>Customize the look and feel</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="space-y-0.5">
+                <Label>Theme</Label>
+                <p className="text-sm text-muted-foreground">Select your preferred color scheme</p>
+              </div>
+              <Select value={theme} onValueChange={setTheme}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue placeholder="Select theme" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="light">Light</SelectItem>
+                  <SelectItem value="dark">Dark</SelectItem>
+                  <SelectItem value="system">System</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Device Settings */}
         <Card>
           <CardHeader>
@@ -243,9 +342,9 @@ export default function SettingsPage() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="device-name">Device Name</Label>
-              <Input 
-                id="device-name" 
-                value={deviceName} 
+              <Input
+                id="device-name"
+                value={deviceName}
                 onChange={(e) => handleDeviceNameChange(e.target.value)}
                 placeholder="Enter device name"
               />
@@ -289,6 +388,53 @@ export default function SettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Notification Settings */}
+        {notificationsSupported && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Notifications</CardTitle>
+              <CardDescription>Manage notification preferences</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="space-y-0.5">
+                  <Label>Push notifications</Label>
+                  <p className="text-sm text-muted-foreground">
+                    {notificationPermission === 'denied'
+                      ? 'Notifications are blocked in your browser settings'
+                      : 'Get notified when you receive messages'}
+                  </p>
+                </div>
+                {notificationPermission === 'default' ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      const result = await requestPermission();
+                      if (result === 'granted') {
+                        await setNotificationsEnabled(true);
+                      }
+                    }}
+                  >
+                    Enable
+                  </Button>
+                ) : (
+                  <Switch
+                    checked={notificationsEnabled}
+                    onCheckedChange={setNotificationsEnabled}
+                    disabled={notificationPermission === 'denied'}
+                  />
+                )}
+              </div>
+              {notificationPermission === 'denied' && (
+                <p className="text-xs text-muted-foreground">
+                  To enable notifications, please allow them in your browser settings for this site.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Security Settings */}
         <Card>
@@ -362,6 +508,20 @@ export default function SettingsPage() {
                 <p className="text-sm text-muted-foreground">Generate new keys (will disconnect devices)</p>
               </div>
               <Button variant="destructive" onClick={resetCryptoKeys}>Reset Keys</Button>
+            </div>
+            <Separator />
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium">Delete account</p>
+                <p className="text-sm text-muted-foreground">Permanently delete your account and all data</p>
+              </div>
+              <Button
+                variant="destructive"
+                onClick={deleteAccount}
+                disabled={isDeletingAccount || !userId}
+              >
+                {isDeletingAccount ? 'Deleting...' : 'Delete Account'}
+              </Button>
             </div>
           </CardContent>
         </Card>
