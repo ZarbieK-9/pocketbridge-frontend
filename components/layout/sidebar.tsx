@@ -13,16 +13,12 @@ import { StatusBadge } from "@/components/ui/status-badge"
 import { useWebSocket } from "@/hooks/use-websocket"
 import { useCrypto } from "@/hooks/use-crypto"
 import { getOrCreateDeviceId } from "@/lib/utils/device"
+import { getWsUrl } from "@/lib/utils/storage"
+import { config } from "@/lib/config"
 
-// Get WebSocket URL from localStorage (set via QR pairing) or env var
+// Get WebSocket URL from storage/config helpers
 function getWebSocketUrl(): string {
-  if (typeof window !== 'undefined') {
-    const storedUrl = localStorage.getItem('pocketbridge_ws_url');
-    if (storedUrl) {
-      return storedUrl;
-    }
-  }
-  return process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
+  return getWsUrl() || config.wsUrl;
 }
 
 function getBackendApiUrlFromWs(wsUrl: string): string {
@@ -34,7 +30,7 @@ function getBackendApiUrlFromWs(wsUrl: string): string {
     const basePath = u.pathname.replace(/\/?ws$/, '');
     return `${httpProtocol}//${u.host}${basePath}`;
   } catch {
-    return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+    return config.apiUrl;
   }
 }
 
@@ -42,7 +38,7 @@ const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/clipboard", label: "Clipboard", icon: Clipboard },
   { href: "/scratchpad", label: "Scratchpad", icon: FileText },
-  { href: "/messages", label: "Messages", icon: MessageSquare },
+  { href: "/messages", label: "Secret Chat", icon: MessageSquare },
   { href: "/files", label: "Files", icon: FolderOpen },
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/pair", label: "Pair Device", icon: KeyRound },

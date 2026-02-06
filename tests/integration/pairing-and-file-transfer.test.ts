@@ -32,6 +32,11 @@ import { generateSymmetricKey, importAESKey, exportAESKey } from '@/lib/crypto/k
 import { encryptPayload, decryptPayload } from '@/lib/crypto/encryption';
 import type { EncryptedEvent, FileMetadataPayload } from '@/types';
 
+const TEST_WS_URL =
+  process.env.POCKETBRIDGE_TEST_WS_URL ||
+  process.env.NEXT_PUBLIC_WS_URL ||
+  'ws://pocketbridge.duckdns.org/ws';
+
 // Mock modules
 vi.mock('@/lib/utils/device', () => ({
   getOrCreateDeviceId: () => 'test-device-id',
@@ -39,7 +44,7 @@ vi.mock('@/lib/utils/device', () => ({
 }));
 
 vi.mock('@/lib/utils/storage', () => ({
-  getWsUrl: () => 'ws://localhost:3001/ws',
+  getWsUrl: () => TEST_WS_URL,
   setWsUrl: vi.fn(),
 }));
 
@@ -97,7 +102,7 @@ class TestUser {
 
   async generateCode(): Promise<string> {
     const data: PairingData = {
-      wsUrl: 'ws://localhost:3001/ws',
+      wsUrl: TEST_WS_URL,
       userId: this.userId,
       deviceId: this.deviceId,
       deviceName: this.deviceName,
@@ -405,7 +410,7 @@ describe('Pairing and File Transfer Integration', () => {
 
   describe('Phase 2: WebSocket Connection and Handshake', () => {
     it('should establish WebSocket connections for both users', async () => {
-      const wsUrl = 'ws://localhost:3001/ws';
+      const wsUrl = TEST_WS_URL;
 
       // User A connects
       const wsA = new WebSocket(wsUrl);

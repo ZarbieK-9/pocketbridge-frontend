@@ -58,9 +58,9 @@ interface ActivityEvent {
 
 export default function DashboardPage() {
   const { identityKeyPair, isInitialized } = useCrypto();
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://pocketbridge.duckdns.org';
   const deviceId = getOrCreateDeviceId();
-  const wsUrl = getWsUrl() || 'ws://localhost:3001/ws';
+  const wsUrl = getWsUrl() || 'ws://pocketbridge.duckdns.org/ws';
   const { status: connectionStatus, isConnected, lastSystemMessage } = useWebSocket({
     url: wsUrl,
     deviceId,
@@ -597,9 +597,9 @@ export default function DashboardPage() {
               </Link>
             </Button>
             <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent hover:bg-primary/5" asChild>
-              <Link href="/messages" aria-label="Send Message">
+              <Link href="/messages" aria-label="Secret Chat">
                 <MessageSquare className="h-6 w-6 text-primary" aria-hidden="true" />
-                <span>Send Message</span>
+                <span>Secret Chat</span>
               </Link>
             </Button>
             <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent hover:bg-primary/5" asChild>

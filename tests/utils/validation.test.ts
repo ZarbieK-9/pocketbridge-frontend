@@ -16,6 +16,11 @@ import {
 } from '@/lib/utils/validation';
 import { ValidationError } from '@/lib/utils/errors';
 
+const TEST_WS_URL =
+  process.env.POCKETBRIDGE_TEST_WS_URL ||
+  process.env.NEXT_PUBLIC_WS_URL ||
+  'ws://pocketbridge.duckdns.org/ws';
+
 describe('Validation Utilities', () => {
   describe('validateDeviceName', () => {
     it('should validate valid device names', () => {
@@ -58,7 +63,7 @@ describe('Validation Utilities', () => {
 
   describe('validateWebSocketUrl', () => {
     it('should validate ws:// URLs', () => {
-      expect(validateWebSocketUrl('ws://localhost:3001/ws')).toBe('ws://localhost:3001/ws');
+      expect(validateWebSocketUrl(TEST_WS_URL)).toBe(TEST_WS_URL);
     });
 
     it('should validate wss:// URLs', () => {

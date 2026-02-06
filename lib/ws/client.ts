@@ -90,6 +90,7 @@ export class WebSocketClient {
   private maxHandshakeRetries: number = 3; // Max handshake retries
   private connectInProgress: boolean = false; // Guard against concurrent connect() calls
   private pendingEventsBuffer: EncryptedEvent[] = []; // Buffer for events received before session keys are ready
+  private fileEventBuffer: EncryptedEvent[] = []; // Buffer file events for pages that mount late
 
   constructor(url: string, deviceId: string) {
     this.url = url;
@@ -590,14 +591,26 @@ export class WebSocketClient {
       this.processBufferedEvents(bufferedEvents);
     }
 
-    // Request replay if needed
-    const lastAck = queue.getLastAckDeviceSeq();
-    if (lastAck > 0) {
-      this.requestReplay();
-    }
+    // Skip replay and event sync if we're mid-pairing flow.
+    // During pairing, the server session userId is the device's OLD identity (preserved
+    // from the DB), but the client's events use the NEW adopted identity. Sending events
+    // now would cause "Event user_id mismatch". The complete_pairing message will fix the
+    // session, and events will sync on the next connection after the page redirects.
+    const hasPendingPairing = typeof window !== 'undefined' &&
+      !!sessionStorage.getItem('pending_pairing_code');
 
-    // Sync pending events from offline queue
-    this.syncPending();
+    if (!hasPendingPairing) {
+      // Request replay if needed
+      const lastAck = queue.getLastAckDeviceSeq();
+      if (lastAck > 0) {
+        this.requestReplay();
+      }
+
+      // Sync pending events from offline queue
+      this.syncPending();
+    } else {
+      logger.info('[HANDSHAKE] Skipping syncPending/requestReplay — pending pairing code detected');
+    }
   }
 
   /**
@@ -971,6 +984,15 @@ export class WebSocketClient {
         logger.error('Event handler error', error);
       }
     });
+
+    // Buffer file events so late-mounting pages (e.g., /files) can pick them up
+    if (event.type.startsWith('file:')) {
+      this.fileEventBuffer.push(event);
+      // Cap buffer to prevent unbounded growth
+      if (this.fileEventBuffer.length > 200) {
+        this.fileEventBuffer = this.fileEventBuffer.slice(-100);
+      }
+    }
 
     // Send ACK
     this.send({
@@ -1522,6 +1544,17 @@ export class WebSocketClient {
         logger.error('System handler error', error);
       }
     });
+  }
+
+  /**
+   * Consume buffered file events (returns and clears the buffer).
+   * Call this when a file-handling page mounts to pick up events
+   * that arrived while the page was not mounted.
+   */
+  consumeBufferedFileEvents(): EncryptedEvent[] {
+    const events = [...this.fileEventBuffer];
+    this.fileEventBuffer = [];
+    return events;
   }
 
   /**

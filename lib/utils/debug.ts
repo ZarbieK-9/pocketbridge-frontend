@@ -3,6 +3,8 @@
  * These are safe to use in browser console
  */
 
+import { config } from '../config';
+
 /**
  * Get the WebSocket URL that the app is using
  * Safe to call from browser console
@@ -27,7 +29,7 @@ export function getCurrentWebSocketUrl(): string {
   }
 
   // Fallback default
-  return 'default: ws://localhost:3001/ws';
+  return `default: ${config.wsUrl}`;
 }
 
 /**

@@ -7,6 +7,15 @@ const STORAGE_KEYS = {
   PAIRED_ACCOUNT: 'pocketbridge_paired_account',
 };
 
+function isLocalhostUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
 export function setWsUrl(url: string): void {
   if (typeof window !== 'undefined') {
     localStorage.setItem(STORAGE_KEYS.WS_URL, url);
@@ -15,7 +24,15 @@ export function setWsUrl(url: string): void {
 
 export function getWsUrl(): string | null {
   if (typeof window !== 'undefined') {
-    return localStorage.getItem(STORAGE_KEYS.WS_URL);
+    const stored = localStorage.getItem(STORAGE_KEYS.WS_URL);
+    if (!stored) {
+      return null;
+    }
+    if (isLocalhostUrl(stored)) {
+      localStorage.removeItem(STORAGE_KEYS.WS_URL);
+      return null;
+    }
+    return stored;
   }
   return null;
 }

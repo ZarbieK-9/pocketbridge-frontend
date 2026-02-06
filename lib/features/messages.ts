@@ -1,10 +1,12 @@
 /**
- * Self-Destruct Messages Feature - Phase 1
- * 
- * One-time view messages with TTL
- * - TTL enforced via metadata
- * - Payload deletion handled client-side
- * - One-time view semantics
+ * Secret Chat Messages Feature
+ *
+ * Real-time encrypted chat between paired devices.
+ * Uses `message:text` events on the `messages:main` stream,
+ * compatible with the mobile agent's chat implementation.
+ *
+ * Also supports legacy `message:self_destruct` events for
+ * backward compatibility with previously sent messages.
  */
 
 import { createEvent } from '@/lib/sync/event-builder';
@@ -13,176 +15,158 @@ import { getEventsByStream } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
 import { getWebSocketClient } from '@/lib/ws';
-import type { EncryptedEvent, MessageSelfDestructPayload } from '@/types';
+import type {
+  EncryptedEvent,
+  MessageTextPayload,
+  MessageSelfDestructPayload,
+} from '@/types';
 
 const MESSAGES_STREAM_ID = 'messages:main';
 
+export interface ChatMessage {
+  id: string;
+  text: string;
+  timestamp: number;
+  deviceId: string;
+  isLocal: boolean;
+}
+
 /**
- * Send self-destruct message
+ * Send a chat message
  */
-export async function sendSelfDestructMessage(
-  text: string,
-  ttlSeconds: number,
-): Promise<EncryptedEvent> {
+export async function sendChatMessage(text: string): Promise<EncryptedEvent> {
   const deviceId = getOrCreateDeviceId();
   const wsClient = getWebSocketClient();
   const userId = wsClient.getUserId() || undefined;
-  const expiresAt = Date.now() + ttlSeconds * 1000;
-  
-  const payload: MessageSelfDestructPayload = {
-    text,
-    expiresAt,
-  };
+
+  const payload: MessageTextPayload = { text };
 
   const event = await createEvent(
     MESSAGES_STREAM_ID,
     deviceId,
-    'message:self_destruct',
+    'message:text',
     payload,
     userId,
   );
 
-  // Sync immediately to send the message over WebSocket
   await wsClient.syncPending();
-
-  // Set TTL on event metadata
-  return {
-    ...event,
-    ttl: expiresAt,
-  };
+  return event;
 }
 
 /**
- * Receive self-destruct message
+ * Decrypt a single chat event into a ChatMessage
  */
-export async function receiveSelfDestructMessage(
+export async function decryptChatEvent(
   event: EncryptedEvent,
-): Promise<{ text: string; expiresAt: number } | null> {
-  // Check TTL
-  if (event.ttl && event.ttl < Date.now()) {
-    console.log('[Messages] Message expired');
-    return null;
-  }
+): Promise<ChatMessage | null> {
+  if (!event.encrypted_payload || event.encrypted_payload === '') return null;
+  if ((event as any).payload_deleted) return null;
 
   try {
     const sharedKey = await getSharedEncryptionKey();
-    if (!sharedKey) {
-      console.error('[Messages] Shared encryption key not available');
-      return null;
+    if (!sharedKey) return null;
+
+    const localDeviceId = getOrCreateDeviceId();
+
+    if (event.type === 'message:text') {
+      const payload = (await decryptPayload(
+        event.encrypted_payload,
+        sharedKey,
+      )) as MessageTextPayload;
+
+      return {
+        id: event.event_id,
+        text: payload.text,
+        timestamp: event.created_at || Date.now(),
+        deviceId: event.device_id,
+        isLocal: event.device_id === localDeviceId,
+      };
     }
 
-    const payload = await decryptPayload(
-      event.encrypted_payload,
-      sharedKey,
-    ) as MessageSelfDestructPayload;
+    // Legacy: support self-destruct messages as regular chat bubbles
+    if (event.type === 'message:self_destruct') {
+      const payload = (await decryptPayload(
+        event.encrypted_payload,
+        sharedKey,
+      )) as MessageSelfDestructPayload;
 
-    // Check expiration
-    if (payload.expiresAt < Date.now()) {
-      return null;
+      if (payload.expiresAt < Date.now()) return null;
+
+      return {
+        id: event.event_id,
+        text: payload.text,
+        timestamp: event.created_at || Date.now(),
+        deviceId: event.device_id,
+        isLocal: event.device_id === localDeviceId,
+      };
     }
 
-    return {
-      text: payload.text,
-      expiresAt: payload.expiresAt,
-    };
+    return null;
   } catch (error) {
-    console.error('[Messages] Failed to decrypt message:', error);
+    console.error('[Chat] Failed to decrypt event:', error);
     return null;
   }
 }
 
 /**
- * Get all active messages (not expired)
+ * Load all chat messages from IndexedDB
  */
-export async function getActiveMessages(): Promise<Array<{ eventId: string; text: string; expiresAt: number }>> {
+export async function loadChatHistory(): Promise<ChatMessage[]> {
   try {
     const events = await getEventsByStream(MESSAGES_STREAM_ID);
     const now = Date.now();
-    
-    const activeMessages = [];
-    
+    const messages: ChatMessage[] = [];
+
     for (const event of events) {
-      // Check TTL
-      if (event.ttl && event.ttl < now) {
-        continue;
-      }
-
-      // Skip deleted messages (check for payload_deleted flag or empty payload)
-      if ((event as any).payload_deleted || !event.encrypted_payload || event.encrypted_payload === '') {
-        continue;
-      }
-
-      const message = await receiveSelfDestructMessage(event);
-      if (message) {
-        activeMessages.push({
-          eventId: event.event_id,
-          text: message.text,
-          expiresAt: message.expiresAt,
-        });
-      }
+      if (event.ttl && event.ttl < now) continue;
+      const msg = await decryptChatEvent(event);
+      if (msg) messages.push(msg);
     }
-    
-    return activeMessages;
+
+    messages.sort((a, b) => a.timestamp - b.timestamp);
+    return messages;
   } catch (error) {
-    console.error('[Messages] Failed to get active messages:', error);
+    console.error('[Chat] Failed to load history:', error);
     return [];
   }
 }
 
 /**
- * Delete message payload (client-side)
- * Note: Event metadata remains, but payload is deleted
+ * Delete a message payload (client-side only)
  */
 export async function deleteMessagePayload(eventId: string): Promise<void> {
   try {
     const { getDatabase } = await import('@/lib/sync/db');
     const { STORE_EVENTS } = await import('@/lib/constants');
     const db = await getDatabase();
-    
+
     return new Promise((resolve, reject) => {
       const transaction = db.transaction([STORE_EVENTS], 'readwrite');
       const store = transaction.objectStore(STORE_EVENTS);
       const request = store.get(eventId);
-      
+
       request.onsuccess = () => {
         const event = request.result;
         if (event) {
-          // Mark payload as deleted by setting encrypted_payload to empty
-          // Event metadata (event_id, device_seq, etc.) is preserved
           const updatedEvent = {
             ...event,
-            encrypted_payload: '', // Clear payload
-            payload_deleted: true, // Mark as deleted
-            deleted_at: Date.now(), // Timestamp deletion
+            encrypted_payload: '',
+            payload_deleted: true,
+            deleted_at: Date.now(),
           };
-          
+
           const updateRequest = store.put(updatedEvent);
-          updateRequest.onsuccess = () => {
-            console.log(`[Messages] Deleted payload for event ${eventId}`);
-            resolve();
-          };
-          updateRequest.onerror = () => {
-            reject(new Error('Failed to update event'));
-          };
+          updateRequest.onsuccess = () => resolve();
+          updateRequest.onerror = () => reject(new Error('Failed to update event'));
         } else {
-          console.warn(`[Messages] Event ${eventId} not found`);
-          resolve(); // Not an error if event doesn't exist
+          resolve();
         }
       };
-      
-      request.onerror = () => {
-        reject(new Error('Failed to get event'));
-      };
+
+      request.onerror = () => reject(new Error('Failed to get event'));
     });
   } catch (error) {
-    console.error(`[Messages] Failed to delete payload for event ${eventId}:`, error);
+    console.error(`[Chat] Failed to delete payload for event ${eventId}:`, error);
     throw error;
   }
 }
-
-
-
-
-
-
-

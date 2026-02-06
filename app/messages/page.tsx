@@ -1,35 +1,29 @@
 "use client"
 
 /**
- * Self-Destruct Messages Page - Phase 1
+ * Secret Chat Page
  *
- * Send secure messages that expire after viewing
- * - TTL enforcement
- * - One-time view semantics
- * - Browser notifications for incoming messages
+ * Real-time encrypted chat between paired devices.
+ * Chat bubble UI with auto-scroll, message input bar,
+ * and browser notification support for incoming messages.
  */
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { useCrypto } from '@/hooks/use-crypto';
 import { useNotifications } from '@/hooks/use-notifications';
 import {
-  sendSelfDestructMessage,
-  getActiveMessages,
-  deleteMessagePayload,
-  receiveSelfDestructMessage,
+  sendChatMessage,
+  loadChatHistory,
+  decryptChatEvent,
+  type ChatMessage,
 } from '@/lib/features/messages';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { loadUserProfile } from '@/lib/utils/user-profile';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/status-badge';
-import { Send, Clock, Trash2, Bell, BellOff } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
-import { validateMessageText, validateTTL } from '@/lib/utils/validation';
+import { Button } from '@/components/ui/button';
+import { Send, Bell, BellOff, ShieldCheck, MessageSquareLock } from 'lucide-react';
+import { validateMessageText } from '@/lib/utils/validation';
 import { checkRateLimit } from '@/lib/utils/rate-limit';
 import { config } from '@/lib/config';
 import { logger } from '@/lib/utils/logger';
@@ -37,19 +31,12 @@ import { ValidationError } from '@/lib/utils/errors';
 import { analytics } from '@/lib/utils/analytics';
 import { SyncIndicator } from '@/components/sync-indicator';
 import { toast } from '@/components/ui/toast';
+import { cn } from '@/lib/utils';
 import type { EncryptedEvent } from '@/types';
 
 const WS_URL = config.wsUrl;
 
-const TTL_OPTIONS = [
-  { value: '30', label: '30 seconds' },
-  { value: '60', label: '1 minute' },
-  { value: '300', label: '5 minutes' },
-  { value: '3600', label: '1 hour' },
-  { value: '86400', label: '24 hours' },
-];
-
-export default function MessagesPage() {
+export default function SecretChatPage() {
   const deviceId = getOrCreateDeviceId();
   const { isInitialized: cryptoInitialized } = useCrypto();
   const { isConnected, sessionKeys, lastEvent } = useWebSocket({
@@ -66,144 +53,152 @@ export default function MessagesPage() {
     showMessageNotification,
   } = useNotifications();
 
-  const [messageText, setMessageText] = useState('');
-  const [selectedTTL, setSelectedTTL] = useState('300');
-  const [messages, setMessages] = useState<Array<{ eventId: string; text: string; expiresAt: number }>>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'sending' | 'synced' | 'error'>('idle');
 
-  // Track the last processed event to prevent duplicate notifications
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const lastProcessedEventRef = useRef<string | null>(null);
 
   // Track page view
   useEffect(() => {
-    analytics.page('Messages');
+    analytics.page('Secret Chat');
   }, []);
 
-  // Load messages on mount and when session keys available
+  // Scroll to bottom
+  const scrollToBottom = useCallback(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
+
+  // Load chat history when session keys are ready
   useEffect(() => {
     if (sessionKeys) {
-      loadMessages();
-      // Refresh messages every 5 seconds to check expiration
-      const interval = setInterval(loadMessages, 5000);
-      return () => clearInterval(interval);
+      loadChatHistory().then((history) => {
+        setMessages(history);
+        setTimeout(scrollToBottom, 100);
+      });
     }
-  }, [sessionKeys]);
+  }, [sessionKeys, scrollToBottom]);
 
   // Handle incoming messages
   useEffect(() => {
-    if (lastEvent && lastEvent.type === 'message:self_destruct' && sessionKeys) {
-      const eventId = (lastEvent as EncryptedEvent).event_id;
+    if (!lastEvent || !sessionKeys) return;
+    if (lastEvent.type !== 'message:text' && lastEvent.type !== 'message:self_destruct') return;
 
-      // Prevent duplicate processing
-      if (lastProcessedEventRef.current === eventId) {
-        return;
-      }
-      lastProcessedEventRef.current = eventId;
+    const eventId = (lastEvent as EncryptedEvent).event_id;
+    if (lastProcessedEventRef.current === eventId) return;
+    lastProcessedEventRef.current = eventId;
 
-      // Check if message is from another device (not this one)
-      const isFromOtherDevice = (lastEvent as EncryptedEvent).device_id !== deviceId;
+    const isFromOtherDevice = (lastEvent as EncryptedEvent).device_id !== deviceId;
 
-      loadMessages();
-      setSyncStatus('synced');
-      toast('New message received', 'success');
-
-      // Show browser notification for messages from other devices
-      if (isFromOtherDevice) {
-        // Get message preview for notification
-        receiveSelfDestructMessage(lastEvent as EncryptedEvent).then((message) => {
-          if (message) {
-            const profile = loadUserProfile();
-            const senderName = profile?.displayName || 'PocketBridge';
-            showMessageNotification(senderName, message.text, () => {
-              // Focus on the messages page when notification is clicked
-              window.focus();
-            });
-          }
-        }).catch((err) => {
-          logger.warn('Failed to decrypt message for notification', {
-            error: err instanceof Error ? err.message : String(err),
-          });
+    decryptChatEvent(lastEvent as EncryptedEvent).then((msg) => {
+      if (msg) {
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === msg.id)) return prev;
+          return [...prev, msg];
         });
+        setTimeout(scrollToBottom, 100);
+        setSyncStatus('synced');
+
+        if (isFromOtherDevice) {
+          const profile = loadUserProfile();
+          const senderName = profile?.displayName || 'PocketBridge';
+          showMessageNotification(senderName, msg.text, () => {
+            window.focus();
+          });
+        }
       }
-    }
-  }, [lastEvent, sessionKeys, deviceId, showMessageNotification]);
+    }).catch((err) => {
+      logger.warn('Failed to decrypt incoming message', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }, [lastEvent, sessionKeys, deviceId, showMessageNotification, scrollToBottom]);
 
-  async function loadMessages() {
-    if (!sessionKeys) return;
-
-    try {
-      const activeMessages = await getActiveMessages();
-      setMessages(activeMessages);
-    } catch (error) {
-      logger.error('Failed to load messages', error);
-    }
-  }
+  // Scroll when messages change
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
 
   async function handleSend() {
-    if (!sessionKeys || !messageText.trim() || isSending) return;
+    if (!sessionKeys || !inputText.trim() || isSending) return;
 
-    // Rate limiting
-    const deviceId = getOrCreateDeviceId();
     const rateLimit = checkRateLimit(`message:${deviceId}`, 'messageSend');
     if (!rateLimit.allowed) {
       const resetIn = Math.ceil((rateLimit.resetAt - Date.now()) / 1000);
-      toast(`Rate limit exceeded. Please wait ${resetIn} seconds before sending another message.`, 'error');
+      toast(`Rate limit. Wait ${resetIn}s.`, 'error');
       return;
     }
 
     setIsSending(true);
     setSyncStatus('sending');
     try {
-      // Validate and sanitize input
-      const sanitizedText = validateMessageText(messageText);
-      const ttlSeconds = validateTTL(parseInt(selectedTTL, 10));
+      const sanitizedText = validateMessageText(inputText);
+      await sendChatMessage(sanitizedText);
 
-      await sendSelfDestructMessage(sanitizedText, ttlSeconds);
-      setMessageText('');
-      await loadMessages();
+      // Optimistic local message
+      const localMsg: ChatMessage = {
+        id: `local-${Date.now()}`,
+        text: sanitizedText,
+        timestamp: Date.now(),
+        deviceId,
+        isLocal: true,
+      };
+      setMessages((prev) => [...prev, localMsg]);
+      setInputText('');
       setSyncStatus('synced');
-      toast('Message sent to all devices', 'success');
-      logger.info('Message sent successfully', { ttl: ttlSeconds });
-      analytics.feature('messages', 'send', { ttl: ttlSeconds });
+      inputRef.current?.focus();
+      analytics.feature('messages', 'send');
     } catch (error) {
       logger.error('Failed to send message', error);
       if (error instanceof ValidationError) {
         toast(error.message, 'error');
       } else {
-        toast('Failed to send message. Please try again.', 'error');
+        toast('Failed to send message.', 'error');
       }
+      setSyncStatus('error');
     } finally {
       setIsSending(false);
     }
   }
 
-  async function handleDelete(eventId: string) {
-    try {
-      await deleteMessagePayload(eventId);
-      await loadMessages();
-      logger.info('Message deleted', { eventId });
-    } catch (error) {
-      logger.error('Failed to delete message', error);
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
     }
+  }
+
+  function formatTime(timestamp: number) {
+    const d = new Date(timestamp);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
   if (!cryptoInitialized) {
     return (
-      <div className="container mx-auto p-6">
-        <Card className="p-6">
-          <p>Initializing cryptography...</p>
-        </Card>
+      <div className="flex h-full items-center justify-center">
+        <p className="text-muted-foreground">Initializing encryption...</p>
       </div>
     );
   }
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Self-Destruct Messages</h1>
+    <div className="flex h-full flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-border px-6 py-3">
         <div className="flex items-center gap-3">
-          {/* Notification toggle */}
+          <MessageSquareLock className="h-5 w-5 text-primary" />
+          <div>
+            <h1 className="text-lg font-semibold">Secret Chat</h1>
+            <p className="text-xs text-muted-foreground flex items-center gap-1">
+              <ShieldCheck className="h-3 w-3" />
+              End-to-end encrypted
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
           {notificationsSupported && (
             <Button
               variant="ghost"
@@ -236,94 +231,97 @@ export default function MessagesPage() {
         </div>
       </div>
 
-      {/* Send Message */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Send Message</CardTitle>
-          <CardDescription>Create a message that will self-destruct after the timer expires</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="message-text">Message</Label>
-            <Textarea
-              id="message-text"
-              value={messageText}
-              onChange={(e) => setMessageText(e.target.value)}
-              placeholder="Type your secure message here..."
-              className="min-h-32"
-            />
+      {/* Messages area */}
+      <div className="flex-1 overflow-y-auto px-6 py-4">
+        {messages.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center text-center">
+            <MessageSquareLock className="h-12 w-12 text-muted-foreground/50" />
+            <p className="mt-4 text-sm font-medium text-muted-foreground">
+              No messages yet
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Send a message to start the conversation across your devices
+            </p>
           </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="expiry">Self-Destruct Timer</Label>
-            <Select value={selectedTTL} onValueChange={setSelectedTTL}>
-              <SelectTrigger id="expiry">
-                <SelectValue placeholder="Select expiry time" />
-              </SelectTrigger>
-              <SelectContent>
-                {TTL_OPTIONS.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <Button
-            className="w-full"
-            onClick={handleSend}
-            disabled={!messageText.trim() || isSending || !isConnected}
-          >
-            <Send className="mr-2 h-4 w-4" />
-            {isSending ? 'Sending...' : 'Send Secure Message'}
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* Message History */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Active Messages</CardTitle>
-          <CardDescription>Messages that haven't expired yet</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {messages.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border p-8 text-center">
-              <Clock className="mx-auto h-8 w-8 text-muted-foreground" />
-              <p className="mt-4 text-sm text-muted-foreground">No active messages</p>
-              <p className="mt-2 text-xs text-muted-foreground">Messages will appear here once sent</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {messages.map((msg) => (
+        ) : (
+          <div className="space-y-3">
+            {messages.map((msg) => (
+              <div
+                key={msg.id}
+                className={cn(
+                  'flex',
+                  msg.isLocal ? 'justify-end' : 'justify-start'
+                )}
+              >
                 <div
-                  key={msg.eventId}
-                  className="rounded-lg border p-4 space-y-2"
+                  className={cn(
+                    'max-w-[75%] rounded-2xl px-4 py-2.5',
+                    msg.isLocal
+                      ? 'rounded-br-md bg-primary text-primary-foreground'
+                      : 'rounded-bl-md bg-muted text-foreground'
+                  )}
                 >
-                  <div className="flex items-start justify-between">
-                    <p className="text-sm whitespace-pre-wrap">{msg.text}</p>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDelete(msg.eventId)}
-                      className="ml-2"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Clock className="h-3 w-3" />
-                    <span>
-                      Expires {formatDistanceToNow(new Date(msg.expiresAt), { addSuffix: true })}
-                    </span>
-                  </div>
+                  <p className="text-sm whitespace-pre-wrap wrap-break-word">{msg.text}</p>
+                  <p
+                    className={cn(
+                      'mt-1 text-[10px]',
+                      msg.isLocal
+                        ? 'text-primary-foreground/60'
+                        : 'text-muted-foreground'
+                    )}
+                  >
+                    {formatTime(msg.timestamp)}
+                    {!msg.isLocal && (
+                      <span className="ml-1.5">
+                        {msg.deviceId.substring(0, 6)}
+                      </span>
+                    )}
+                  </p>
                 </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+              </div>
+            ))}
+            <div ref={messagesEndRef} />
+          </div>
+        )}
+      </div>
+
+      {/* Input bar */}
+      <div className="border-t border-border px-4 py-3">
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={inputRef}
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={isConnected ? 'Type a message...' : 'Connect to send messages'}
+            disabled={!isConnected}
+            rows={1}
+            className={cn(
+              'flex-1 resize-none rounded-xl border border-input bg-background px-4 py-2.5 text-sm',
+              'placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring',
+              'max-h-32 min-h-10',
+              'disabled:cursor-not-allowed disabled:opacity-50'
+            )}
+            style={{
+              height: 'auto',
+              overflow: 'hidden',
+            }}
+            onInput={(e) => {
+              const target = e.target as HTMLTextAreaElement;
+              target.style.height = 'auto';
+              target.style.height = Math.min(target.scrollHeight, 128) + 'px';
+            }}
+          />
+          <Button
+            size="icon"
+            onClick={handleSend}
+            disabled={!inputText.trim() || isSending || !isConnected}
+            className="h-10 w-10 shrink-0 rounded-xl"
+          >
+            <Send className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

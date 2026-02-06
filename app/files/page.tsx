@@ -13,6 +13,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { useCrypto } from '@/hooks/use-crypto';
+import { getWebSocketClient } from '@/lib/ws';
 import {
   startFileUpload,
   uploadFileChunk,
@@ -233,6 +234,42 @@ export default function FilesPage() {
       });
     }
   }, [lastEvent, sessionKeys, deviceId]);
+
+  // Process file events that arrived before this page was mounted.
+  // The WebSocket client buffers file events, and we consume them here on mount.
+  useEffect(() => {
+    if (!sessionKeys) return;
+
+    try {
+      const client = getWebSocketClient(WS_URL, deviceId);
+      const bufferedEvents = client.consumeBufferedFileEvents();
+
+      if (bufferedEvents.length > 0) {
+        console.log('[FILES PAGE] Processing', bufferedEvents.length, 'buffered file events from before mount');
+
+        for (const event of bufferedEvents) {
+          if (event.device_id === deviceId) continue;
+
+          if (event.type === 'file:metadata') {
+            console.log('[FILES PAGE] Processing buffered file:metadata event');
+            handleIncomingFileMetadata(event);
+            setSyncStatus('synced');
+          } else if (event.type === 'file:chunk') {
+            console.log('[FILES PAGE] Processing buffered file:chunk event');
+            handleIncomingFileChunk(event);
+          } else if (event.type === 'file:chunk_ack') {
+            handleChunkAck(event);
+          } else if (event.type === 'file:resume_request') {
+            handleResumeRequest(event);
+          }
+        }
+      }
+    } catch (err) {
+      // Client may not exist yet if connection hasn't been established
+      console.debug('[FILES PAGE] Could not consume buffered events:', err);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionKeys, deviceId]);
 
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -502,12 +539,40 @@ export default function FilesPage() {
         return;
       }
 
-      // Import file encryption key
-      const { importAESKey } = await import('@/lib/crypto/keys');
-      const encryptionKeyBytes = Uint8Array.from(atob(metadata.encryption_key || ''), c => c.charCodeAt(0));
-      const fileEncryptionKey = await importAESKey(encryptionKeyBytes);
+      // Determine if sender used per-file encryption (web) or shared-key only (mobile)
+      const hasPerFileKey = !!metadata.encryption_key && metadata.encryption_key.length > 0;
 
-      const chunk = await receiveFileChunk(event, fileEncryptionKey);
+      let chunk: { chunkIndex: number; data: Uint8Array; hash: string } | null = null;
+
+      if (hasPerFileKey) {
+        // Per-file encryption (web sender): chunk data is double-encrypted
+        const { importAESKey } = await import('@/lib/crypto/keys');
+        const encryptionKeyBytes = Uint8Array.from(atob(metadata.encryption_key), c => c.charCodeAt(0));
+        const fileEncryptionKey = await importAESKey(encryptionKeyBytes);
+        chunk = await receiveFileChunk(event, fileEncryptionKey);
+      } else {
+        // No per-file encryption (mobile sender): payload.data is raw base64
+        const dataBytes = Uint8Array.from(atob(payload.data), c => c.charCodeAt(0));
+
+        // Verify hash integrity
+        const hashBuffer = await crypto.subtle.digest('SHA-256', dataBytes);
+        const hashArray = new Uint8Array(hashBuffer);
+        const computedHash = Array.from(hashArray)
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('');
+
+        if (computedHash !== payload.hash) {
+          logger.error('Chunk integrity check failed', { fileId, chunkIndex: payload.chunk_index });
+          return;
+        }
+
+        chunk = {
+          chunkIndex: payload.chunk_index,
+          data: dataBytes,
+          hash: payload.hash,
+        };
+      }
+
       if (chunk) {
         // Store chunk in persistent tracker
         const { complete, transfer } = await storeChunk(

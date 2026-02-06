@@ -12,16 +12,12 @@ import { useWebSocket } from '@/hooks/use-websocket';
 import { useCrypto } from '@/hooks/use-crypto';
 import { useBackgroundClipboard } from '@/hooks/use-background-clipboard';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
+import { getWsUrl } from '@/lib/utils/storage';
+import { config } from '@/lib/config';
 
-// Get WebSocket URL from localStorage (set via QR pairing) or env var
+// Get WebSocket URL from storage/config helpers
 function getWebSocketUrl(): string {
-  if (typeof window !== 'undefined') {
-    const storedUrl = localStorage.getItem('pocketbridge_ws_url');
-    if (storedUrl) {
-      return storedUrl;
-    }
-  }
-  return process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
+  return getWsUrl() || config.wsUrl;
 }
 
 export function BackgroundSync() {

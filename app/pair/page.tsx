@@ -64,7 +64,7 @@ export default function PairPage() {
   // Initialize device name and URL on mount
   useEffect(() => {
     const currentDeviceName = getOrCreateDeviceName();
-    const currentWsUrl = getWsUrl() || config.wsUrl || 'ws://localhost:3001/ws';
+    const currentWsUrl = getWsUrl() || config.wsUrl || 'ws://pocketbridge.duckdns.org/ws';
     
     setDeviceName(currentDeviceName || 'Unknown Device');
     setNewDeviceName(currentDeviceName || 'Unknown Device');
@@ -155,8 +155,14 @@ export default function PairPage() {
             privateKeyHex: identityKeyPair.privateKeyHex,
           };
 
+          let generatedCode: string | null = null;
           try {
-            const { code, expiresAt } = await generatePairingCode(data);
+            const { code, expiresAt, shareableWsUrl } = await generatePairingCode(data);
+            generatedCode = code;
+            // Use the backend-normalized URL (localhost → LAN IP) for sharing with external devices
+            if (shareableWsUrl) {
+              data.wsUrl = shareableWsUrl;
+            }
             setMyPairingCode(code);
             setCodeExpiresAt(expiresAt);
             // Calculate initial time remaining
@@ -195,6 +201,7 @@ export default function PairPage() {
             type: 'pocketbridge-pairing',
             version: '1.0',
             wsUrl: data.wsUrl,
+            pairingCode: generatedCode,
             userId: data.userId,
             deviceId: data.deviceId,
             deviceName: data.deviceName,

@@ -46,7 +46,6 @@ self.addEventListener('fetch', (event) => {
   // This includes both /api/* routes and external backend APIs
   const isApiRequest = url.pathname.startsWith('/api/') || 
                        url.port === '3001' ||
-                       (url.hostname === 'localhost' && url.port === '3001') ||
                        (url.hostname.match(/^192\.168\./) && url.port === '3001') ||
                        url.pathname.startsWith('/health') ||
                        url.pathname.includes('/pairing/');

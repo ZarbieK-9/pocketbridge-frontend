@@ -55,17 +55,17 @@ export async function checkBackendHealth(apiUrl: string): Promise<{ reachable: b
  */
 export function getBackendApiUrl(): string {
   if (typeof window === 'undefined') {
-    return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+    return process.env.NEXT_PUBLIC_API_URL || 'http://pocketbridge.duckdns.org';
   }
-  
+
   // First try explicit API URL env var
   if (process.env.NEXT_PUBLIC_API_URL) {
     console.log('[Pairing] Using NEXT_PUBLIC_API_URL:', process.env.NEXT_PUBLIC_API_URL);
     return process.env.NEXT_PUBLIC_API_URL;
   }
-  
+
   // Try to get from storage utility or use default
-  const wsUrl = getWsUrl() || process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws';
+  const wsUrl = getWsUrl() || process.env.NEXT_PUBLIC_WS_URL || 'ws://pocketbridge.duckdns.org/ws';
   // Convert WebSocket URL to HTTP URL
   // Handle: ws://host:port/ws -> http://host:port
   // Handle: wss://host:port/ws -> https://host:port
@@ -75,7 +75,7 @@ export function getBackendApiUrl(): string {
   // Remove trailing slash
   httpUrl = httpUrl.replace(/\/$/, '');
   
-  const apiUrl = httpUrl || 'http://localhost:3001';
+  const apiUrl = httpUrl || 'http://pocketbridge.duckdns.org';
   
   console.log('[Pairing] Backend API URL derived:', { 
     wsUrl, 
@@ -93,7 +93,7 @@ export function getBackendApiUrl(): string {
  * Stores the code on the backend server
  * Returns code and expiration time
  */
-export async function generatePairingCode(data: PairingData): Promise<{ code: string; expiresAt: Date }> {
+export async function generatePairingCode(data: PairingData): Promise<{ code: string; expiresAt: Date; shareableWsUrl?: string }> {
   // Generate a random 6-digit code
   const code = Math.floor(100000 + Math.random() * 900000).toString();
   
@@ -154,9 +154,9 @@ export async function generatePairingCode(data: PairingData): Promise<{ code: st
     const result = await response.json();
     console.log('[Pairing] Pairing code stored on backend:', code, result);
     
-    // Return code with expiration time
+    // Return code with expiration time and shareable URL (normalized for external devices)
     const expiresAt = result.expiresAt ? new Date(result.expiresAt) : new Date(Date.now() + 10 * 60 * 1000);
-    return { code, expiresAt };
+    return { code, expiresAt, shareableWsUrl: result.shareableWsUrl };
   } catch (error) {
     console.error('[Pairing] Failed to store pairing code on backend:', error);
     console.error('[Pairing] Error details:', {

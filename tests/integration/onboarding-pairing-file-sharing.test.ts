@@ -36,6 +36,11 @@ import {
 import { generateSymmetricKey } from '@/lib/crypto/keys';
 import type { EncryptedEvent } from '@/types';
 
+const TEST_WS_URL =
+  process.env.POCKETBRIDGE_TEST_WS_URL ||
+  process.env.NEXT_PUBLIC_WS_URL ||
+  'ws://pocketbridge.duckdns.org/ws';
+
 // Mock modules
 vi.mock('@/lib/utils/device', () => ({
   getOrCreateDeviceId: () => 'test-device-id',
@@ -43,7 +48,7 @@ vi.mock('@/lib/utils/device', () => ({
 }));
 
 vi.mock('@/lib/utils/storage', () => ({
-  getWsUrl: () => 'ws://localhost:3001/ws',
+  getWsUrl: () => TEST_WS_URL,
   setWsUrl: vi.fn(),
 }));
 
@@ -122,7 +127,7 @@ class SimulatedDevice {
 
   async generatePairingCode(): Promise<string> {
     const data: PairingData = {
-      wsUrl: 'ws://localhost:3001/ws',
+      wsUrl: TEST_WS_URL,
       userId: this.userId,
       deviceId: this.deviceId,
       deviceName: this.deviceName,

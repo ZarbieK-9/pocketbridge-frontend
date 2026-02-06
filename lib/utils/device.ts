@@ -24,6 +24,7 @@ export function getOrCreateDeviceId(): string {
   if (!deviceId) {
     deviceId = generateUUIDv4() // Use UUIDv4 for device IDs (backend requirement)
     localStorage.setItem(STORAGE_KEYS.DEVICE_ID, deviceId)
+    console.log('[Device] 🆕 Generated NEW device ID (Web):', deviceId)
   } else {
     // Validate existing device ID is UUIDv4 format
     // If it's UUIDv7 (from old code), regenerate it
@@ -32,6 +33,9 @@ export function getOrCreateDeviceId(): string {
       console.warn('[Device] Existing device ID is not UUIDv4 format, regenerating...', { oldDeviceId: deviceId });
       deviceId = generateUUIDv4();
       localStorage.setItem(STORAGE_KEYS.DEVICE_ID, deviceId);
+      console.log('[Device] 🆕 Regenerated device ID (Web):', deviceId)
+    } else {
+      console.log('[Device] ✅ Loaded EXISTING device ID (Web):', deviceId)
     }
   }
   return deviceId

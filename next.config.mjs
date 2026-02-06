@@ -76,11 +76,12 @@ const nextConfig = {
               "style-src 'self' 'unsafe-inline'", // 'unsafe-inline' needed for Tailwind
               "img-src 'self' data: blob: https:",
               "font-src 'self' data:",
-              "connect-src 'self' ws://localhost:* wss://* https://* http://localhost:*", // WebSocket and API connections
+              "connect-src 'self' ws://localhost:* ws://* wss://* http://localhost:* http://* https://*", // WebSocket and API connections (ws://* for LAN IPs)
               "frame-ancestors 'self'",
               "base-uri 'self'",
               "form-action 'self'",
-              "upgrade-insecure-requests",
+              // Only upgrade insecure requests in production (breaks ws:// to LAN IPs in dev)
+              ...(process.env.NODE_ENV === 'production' ? ["upgrade-insecure-requests"] : []),
             ].join('; '),
           },
         ],

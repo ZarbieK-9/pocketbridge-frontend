@@ -58,6 +58,15 @@ function deriveApiUrlFromWs(wsUrl: string): string {
   throw new ValidationError('Invalid WebSocket URL format');
 }
 
+function isLocalhostUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Get default WebSocket URL based on environment
  */
@@ -65,8 +74,11 @@ function getDefaultWsUrl(): string {
   if (typeof window !== 'undefined') {
     // Try to get from localStorage (set via pairing)
     const stored = localStorage.getItem('pocketbridge_ws_url');
-    if (stored) {
+    if (stored && !isLocalhostUrl(stored)) {
       return stored;
+    }
+    if (stored && isLocalhostUrl(stored)) {
+      localStorage.removeItem('pocketbridge_ws_url');
     }
   }
   
@@ -78,7 +90,7 @@ function getDefaultWsUrl(): string {
   }
   
   // Development default
-  return 'ws://localhost:3001/ws';
+  return 'ws://pocketbridge.duckdns.org/ws';
 }
 
 /**
@@ -89,7 +101,7 @@ function getDefaultApiUrl(): string {
   if (nodeEnv === 'production') {
     return 'https://backend-production-7f7ab.up.railway.app';
   }
-  return 'http://localhost:3001';
+  return 'http://pocketbridge.duckdns.org';
 }
 
 /**
