@@ -90,7 +90,7 @@ function getDefaultWsUrl(): string {
   }
   
   // Development default
-  return 'ws://pocketbridge.duckdns.org/ws';
+  return 'wss://pocketbridge.duckdns.org/ws';
 }
 
 /**
@@ -101,7 +101,7 @@ function getDefaultApiUrl(): string {
   if (nodeEnv === 'production') {
     return 'https://backend-production-7f7ab.up.railway.app';
   }
-  return 'http://pocketbridge.duckdns.org';
+  return 'https://pocketbridge.duckdns.org';
 }
 
 /**

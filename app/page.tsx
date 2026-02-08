@@ -58,9 +58,9 @@ interface ActivityEvent {
 
 export default function DashboardPage() {
   const { identityKeyPair, isInitialized } = useCrypto();
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://pocketbridge.duckdns.org';
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://pocketbridge.duckdns.org';
   const deviceId = getOrCreateDeviceId();
-  const wsUrl = getWsUrl() || 'ws://pocketbridge.duckdns.org/ws';
+  const wsUrl = getWsUrl() || 'wss://pocketbridge.duckdns.org/ws';
   const { status: connectionStatus, isConnected, lastSystemMessage } = useWebSocket({
     url: wsUrl,
     deviceId,

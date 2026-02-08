@@ -55,7 +55,7 @@ export async function checkBackendHealth(apiUrl: string): Promise<{ reachable: b
  */
 export function getBackendApiUrl(): string {
   if (typeof window === 'undefined') {
-    return process.env.NEXT_PUBLIC_API_URL || 'http://pocketbridge.duckdns.org';
+    return process.env.NEXT_PUBLIC_API_URL || 'https://pocketbridge.duckdns.org';
   }
 
   // First try explicit API URL env var
@@ -65,7 +65,7 @@ export function getBackendApiUrl(): string {
   }
 
   // Try to get from storage utility or use default
-  const wsUrl = getWsUrl() || process.env.NEXT_PUBLIC_WS_URL || 'ws://pocketbridge.duckdns.org/ws';
+  const wsUrl = getWsUrl() || process.env.NEXT_PUBLIC_WS_URL || 'wss://pocketbridge.duckdns.org/ws';
   // Convert WebSocket URL to HTTP URL
   // Handle: ws://host:port/ws -> http://host:port
   // Handle: wss://host:port/ws -> https://host:port
@@ -75,7 +75,7 @@ export function getBackendApiUrl(): string {
   // Remove trailing slash
   httpUrl = httpUrl.replace(/\/$/, '');
   
-  const apiUrl = httpUrl || 'http://pocketbridge.duckdns.org';
+  const apiUrl = httpUrl || 'https://pocketbridge.duckdns.org';
   
   console.log('[Pairing] Backend API URL derived:', { 
     wsUrl, 

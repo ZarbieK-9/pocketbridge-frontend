@@ -64,7 +64,7 @@ export default function PairPage() {
   // Initialize device name and URL on mount
   useEffect(() => {
     const currentDeviceName = getOrCreateDeviceName();
-    const currentWsUrl = getWsUrl() || config.wsUrl || 'ws://pocketbridge.duckdns.org/ws';
+    const currentWsUrl = getWsUrl() || config.wsUrl || 'wss://pocketbridge.duckdns.org/ws';
     
     setDeviceName(currentDeviceName || 'Unknown Device');
     setNewDeviceName(currentDeviceName || 'Unknown Device');
