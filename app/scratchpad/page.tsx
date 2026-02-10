@@ -2,7 +2,7 @@
 
 /**
  * Live Scratchpad Page - Phase 1 (Yjs Implementation)
- * 
+ *
  * CRDT-based collaborative text editor using Yjs
  * - Real-time synchronization
  * - Offline edit convergence
@@ -31,17 +31,16 @@ import { Save } from 'lucide-react';
 import { config } from '@/lib/config';
 import { analytics } from '@/lib/utils/analytics';
 import { SyncIndicator } from '@/components/sync-indicator';
-import { toast } from '@/components/ui/toast';
 
 const WS_URL = config.wsUrl;
 
 export default function ScratchpadPage() {
-  const deviceId = getOrCreateDeviceId();
+  const [deviceId, setDeviceId] = useState<string>('');
   const { isInitialized: cryptoInitialized } = useCrypto();
   const { isConnected, sessionKeys, lastEvent } = useWebSocket({
     url: WS_URL,
     deviceId,
-    autoConnect: cryptoInitialized,
+    autoConnect: cryptoInitialized && !!deviceId,
   });
 
   const [text, setText] = useState<string>('');
@@ -50,70 +49,108 @@ export default function ScratchpadPage() {
   const [syncStatus, setSyncStatus] = useState<'idle' | 'sending' | 'synced' | 'error'>('idle');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
+  const yjsInitializedRef = useRef(false);
+
+  // Initialize deviceId on client only (avoid SSR hydration mismatch)
+  useEffect(() => {
+    setDeviceId(getOrCreateDeviceId());
+  }, []);
 
   // Track page view
   useEffect(() => {
     analytics.page('Scratchpad');
   }, []);
 
-  // Initialize Yjs document
+  // Initialize Yjs document and load from local store (works offline)
   useEffect(() => {
+    if (!cryptoInitialized || yjsInitializedRef.current) return;
+
     let yjsTextInstance: any = null;
-    let unsubscribe: (() => void) | null = null;
+    let cancelled = false;
 
     async function setup() {
-      await initYjsDoc();
-      yjsTextInstance = await getYjsText();
+      try {
+        await initYjsDoc();
+        yjsTextInstance = await getYjsText();
 
-      // Listen for Yjs changes and update React state
-      const observer = () => {
-        if (yjsTextInstance) {
-          setText(yjsTextInstance.toString());
-        }
-      };
-      yjsTextInstance.observe(observer);
+        if (cancelled) return;
 
-      // Listen for Yjs updates to send
-      if (sessionKeys) {
-        unsubscribe = await onYjsUpdate(async (update) => {
-          try {
-            setSyncStatus('sending');
-            await sendYjsUpdate(update);
-            setLastSaved(new Date());
-            setSyncStatus('synced');
-          } catch (error) {
-            logger.error('[Scratchpad] Failed to send Yjs update:', error);
-            setSyncStatus('error');
+        // Listen for Yjs changes and update React state
+        const observer = () => {
+          if (yjsTextInstance) {
+            setText(yjsTextInstance.toString());
           }
-        });
-        unsubscribeRef.current = unsubscribe;
-      }
+        };
+        yjsTextInstance.observe(observer);
+        yjsInitializedRef.current = true;
 
-      return () => {
-        if (yjsTextInstance) {
-          yjsTextInstance.unobserve(observer);
+        // Load existing content from local store (works offline - no sessionKeys needed)
+        try {
+          const loadedText = await rebuildYjsFromEvents();
+          if (!cancelled) {
+            setText(loadedText);
+          }
+        } catch (error) {
+          logger.error('[Scratchpad] Failed to load from local store:', error);
         }
-        if (unsubscribe) {
-          unsubscribe();
+
+        if (!cancelled) {
+          setIsLoading(false);
         }
-      };
+
+        return () => {
+          if (yjsTextInstance) {
+            yjsTextInstance.unobserve(observer);
+          }
+        };
+      } catch (error) {
+        logger.error('[Scratchpad] Failed to initialize Yjs:', error);
+        if (!cancelled) {
+          setIsLoading(false);
+        }
+      }
     }
 
-    const cleanup = setup();
+    const cleanupPromise = setup();
 
     return () => {
-      cleanup.then(cleanupFn => cleanupFn?.());
+      cancelled = true;
+      cleanupPromise.then(cleanupFn => cleanupFn?.());
+    };
+  }, [cryptoInitialized]);
+
+  // Set up sync sending when WebSocket is connected
+  useEffect(() => {
+    if (!sessionKeys || !yjsInitializedRef.current) return;
+
+    let unsubscribe: (() => void) | null = null;
+
+    async function setupSync() {
+      unsubscribe = await onYjsUpdate(async (update) => {
+        try {
+          setSyncStatus('sending');
+          await sendYjsUpdate(update);
+          setLastSaved(new Date());
+          setSyncStatus('synced');
+        } catch (error) {
+          logger.error('[Scratchpad] Failed to send Yjs update:', error);
+          setSyncStatus('error');
+        }
+      });
+      unsubscribeRef.current = unsubscribe;
+    }
+
+    setupSync();
+
+    return () => {
+      if (unsubscribe) {
+        unsubscribe();
+      }
       if (unsubscribeRef.current) {
         unsubscribeRef.current();
+        unsubscribeRef.current = null;
       }
     };
-  }, [sessionKeys]);
-
-  // Load scratchpad text on mount
-  useEffect(() => {
-    if (sessionKeys) {
-      loadScratchpad();
-    }
   }, [sessionKeys]);
 
   // Handle incoming Yjs updates (skip self-originated events)
@@ -123,20 +160,6 @@ export default function ScratchpadPage() {
       handleIncomingUpdate(lastEvent);
     }
   }, [lastEvent, sessionKeys, deviceId]);
-
-  async function loadScratchpad() {
-    if (!sessionKeys) return;
-
-    setIsLoading(true);
-    try {
-      const loadedText = await rebuildYjsFromEvents();
-      setText(loadedText);
-    } catch (error) {
-      logger.error('[Scratchpad] Failed to load:', error);
-    } finally {
-      setIsLoading(false);
-    }
-  }
 
   async function handleIncomingUpdate(event: any) {
     try {
@@ -161,7 +184,7 @@ export default function ScratchpadPage() {
 
   if (!cryptoInitialized) {
     return (
-      <div className="container mx-auto p-6">
+      <div className="container mx-auto p-4 sm:p-6">
         <Card className="p-6">
           <p>Initializing cryptography...</p>
         </Card>
@@ -170,16 +193,16 @@ export default function ScratchpadPage() {
   }
 
   return (
-    <div className="container mx-auto p-6 space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">Live Scratchpad</h1>
-        <div className="flex items-center gap-3">
+    <div className="container mx-auto p-4 sm:p-6 space-y-3 sm:space-y-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <h1 className="text-2xl sm:text-3xl font-bold">Live Scratchpad</h1>
+        <div className="flex items-center gap-2 sm:gap-3">
           <SyncIndicator status={syncStatus} />
           <StatusBadge status={isConnected ? 'online' : 'offline'} />
           {lastSaved && (
-            <span className="text-sm text-muted-foreground flex items-center gap-1">
-              <Save className="h-4 w-4" />
-              Saved {lastSaved.toLocaleTimeString()}
+            <span className="text-xs sm:text-sm text-muted-foreground flex items-center gap-1">
+              <Save className="h-3 w-3 sm:h-4 sm:w-4" />
+              {lastSaved.toLocaleTimeString()}
             </span>
           )}
         </div>
@@ -188,7 +211,7 @@ export default function ScratchpadPage() {
       <Card className="border-none shadow-none">
         <CardContent className="p-0">
           {isLoading ? (
-            <div className="p-8 text-center text-muted-foreground">
+            <div className="flex items-center justify-center min-h-[50vh] text-muted-foreground">
               Loading scratchpad...
             </div>
           ) : (
@@ -197,20 +220,17 @@ export default function ScratchpadPage() {
               value={text}
               onChange={handleTextChange}
               placeholder="Start typing... your notes sync in real-time across all devices"
-              className="min-h-[calc(100vh-12rem)] resize-none border-0 focus-visible:ring-0 font-mono text-sm"
+              className="min-h-[calc(100vh-14rem)] sm:min-h-[calc(100vh-12rem)] resize-none border-0 focus-visible:ring-0 font-mono text-sm"
             />
           )}
         </CardContent>
       </Card>
 
-      <div className="text-sm text-muted-foreground">
+      <div className="text-xs sm:text-sm text-muted-foreground">
         <p>
           {isConnected
-            ? '✓ Connected. Changes sync automatically using Yjs CRDT.'
-            : '⚠ Disconnected. Changes will sync when reconnected.'}
-        </p>
-        <p className="mt-2">
-          Offline edits converge automatically using Yjs CRDT.
+            ? 'Connected. Changes sync automatically using Yjs CRDT.'
+            : 'Offline. Changes will sync when reconnected.'}
         </p>
       </div>
     </div>
