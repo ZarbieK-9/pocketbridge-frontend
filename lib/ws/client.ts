@@ -83,8 +83,9 @@ export class WebSocketClient {
   // Use getEventQueue().getLastAckDeviceSeq() instead of maintaining a separate copy
   private handshakeState: HandshakeState = {};
   private reconnectAttempts: number = 0;
-  private maxReconnectDelay: number = 30000; // Max 30 seconds
-  private maxReconnectAttempts: number = 10; // Max reconnection attempts before giving up
+  private maxReconnectDelay: number = 30000; // Max 30 seconds for fast phase
+  private slowReconnectDelay: number = 60000; // 60 seconds for slow phase
+  private fastReconnectThreshold: number = 10; // After this many attempts, switch to slow polling
   private sessionExpiresAt: number | null = null; // Session expiration timestamp
   private handshakeRetries: number = 0;
   private maxHandshakeRetries: number = 3; // Max handshake retries
@@ -99,8 +100,33 @@ export class WebSocketClient {
     // Listen for service worker sync requests
     if (typeof window !== 'undefined') {
       window.addEventListener('sw-sync-request', this.handleServiceWorkerSync as EventListener);
+
+      // Reconnect immediately when user returns to the app/tab
+      document.addEventListener('visibilitychange', this.handleVisibilityChange);
     }
   }
+
+  /**
+   * Handle page visibility change — reconnect when user returns to the tab/app
+   */
+  private handleVisibilityChange = (): void => {
+    if (document.visibilityState !== 'visible') return;
+
+    const needsReconnect =
+      this.status === 'disconnected' ||
+      this.status === 'error' ||
+      (this.ws && this.ws.readyState === WebSocket.CLOSED);
+
+    if (needsReconnect) {
+      logger.info('[WS] Tab became visible, reconnecting', {
+        status: this.status,
+        reconnectAttempts: this.reconnectAttempts,
+      });
+      this.reconnectAttempts = 0; // Reset to fast phase
+      this.stopReconnect();
+      this.connect();
+    }
+  };
 
   /**
    * Get current user ID (UUID after pairing, or identity public key hex)
@@ -771,6 +797,10 @@ export class WebSocketClient {
     this.stopHeartbeat();
     this.stopReconnect();
 
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    }
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -1133,28 +1163,10 @@ export class WebSocketClient {
 
   /**
    * Schedule reconnection attempt with exponential backoff
+   * Fast phase: exponential backoff 3s→30s for first 10 attempts
+   * Slow phase: poll every 60s indefinitely until connection is restored
    */
   private scheduleReconnect(): void {
-    // Check if we've exceeded max reconnection attempts
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      logger.warn('Max reconnection attempts reached, stopping reconnect', {
-        attempts: this.reconnectAttempts,
-        maxAttempts: this.maxReconnectAttempts,
-      });
-      this.updateStatus('error');
-      const error = new Error(
-        `Failed to connect after ${this.maxReconnectAttempts} attempts. Please check your network connection and backend status.`
-      );
-      this.errorHandlers.forEach(handler => {
-        try {
-          handler(error);
-        } catch (err) {
-          logger.error('Error handler error', err);
-        }
-      });
-      return;
-    }
-    
     this.stopReconnect();
 
     // Only reconnect if the previous WebSocket is fully closed
@@ -1165,18 +1177,29 @@ export class WebSocketClient {
     // Update status to reconnecting
     this.updateStatus('reconnecting');
 
-    // Exponential backoff: start at 3s, max 30s, with a minimum enforced delay
-    const baseDelay = WS_RECONNECT_DELAY;
-    const minDelay = 1000; // 1s minimum delay
-    const delay = Math.max(minDelay, Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelay));
+    let delay: number;
+    if (this.reconnectAttempts < this.fastReconnectThreshold) {
+      // Fast phase: exponential backoff 3s → 30s
+      const baseDelay = WS_RECONNECT_DELAY;
+      const minDelay = 1000;
+      delay = Math.max(minDelay, Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), this.maxReconnectDelay));
+    } else {
+      // Slow phase: poll every 60s, never give up
+      delay = this.slowReconnectDelay;
+    }
+
     this.reconnectAttempts++;
 
+    logger.info('[WS] Scheduling reconnect', {
+      attempt: this.reconnectAttempts,
+      delay,
+      phase: this.reconnectAttempts <= this.fastReconnectThreshold ? 'fast' : 'slow',
+    });
 
     this.reconnectTimer = setTimeout(() => {
       // Double-check socket is still closed before reconnecting
       if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
         this.connect();
-      } else {
       }
     }, delay);
   }
