@@ -118,13 +118,12 @@ export class EventQueue {
    * This prevents sending events with device_seq <= last_ack_device_seq
    */
   async syncDeviceSeq(lastAckDeviceSeq: number): Promise<void> {
-    // Ensure deviceSeq is at least lastAckDeviceSeq + 1
-    // This way the next event will have device_seq > lastAckDeviceSeq
+    // Ensure the stored counter is at least lastAckDeviceSeq so that
+    // getNextSeq() (which returns stored + 1) produces lastAckDeviceSeq + 1.
     const currentSeq = AtomicSequenceGenerator.getCurrentSeq();
-    if (currentSeq <= lastAckDeviceSeq) {
-      const newSeq = lastAckDeviceSeq + 1;
-      await AtomicSequenceGenerator.setSeq(newSeq);
-      console.log(`[Phase1] Synced deviceSeq to ${newSeq} (lastAckDeviceSeq: ${lastAckDeviceSeq})`);
+    if (currentSeq < lastAckDeviceSeq) {
+      await AtomicSequenceGenerator.setSeq(lastAckDeviceSeq);
+      console.log(`[Phase1] Synced deviceSeq to ${lastAckDeviceSeq} (next event will be ${lastAckDeviceSeq + 1})`);
     }
   }
 
