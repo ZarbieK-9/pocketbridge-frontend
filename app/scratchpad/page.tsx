@@ -8,14 +8,13 @@
  * - Offline edit convergence
  */
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { useCrypto } from '@/hooks/use-crypto';
 import { logger } from '@/lib/utils/logger';
 import {
   initYjsDoc,
   getYjsText,
-  getYjsTextContent,
   setYjsTextContent,
   sendYjsUpdate,
   receiveYjsUpdate,
@@ -24,6 +23,7 @@ import {
   applyYjsUpdate,
 } from '@/lib/features/scratchpad-yjs';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
+import { getWebSocketClient } from '@/lib/ws';
 import { Card, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { StatusBadge } from '@/components/ui/status-badge';
@@ -37,7 +37,7 @@ const WS_URL = config.wsUrl;
 export default function ScratchpadPage() {
   const [deviceId, setDeviceId] = useState<string>('');
   const { isInitialized: cryptoInitialized } = useCrypto();
-  const { isConnected, sessionKeys, lastEvent } = useWebSocket({
+  const { isConnected, sessionKeys } = useWebSocket({
     url: WS_URL,
     deviceId,
     autoConnect: cryptoInitialized && !!deviceId,
@@ -47,9 +47,9 @@ export default function ScratchpadPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'sending' | 'synced' | 'error'>('idle');
+  const [yjsInitialized, setYjsInitialized] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
-  const yjsInitializedRef = useRef(false);
 
   // Initialize deviceId on client only (avoid SSR hydration mismatch)
   useEffect(() => {
@@ -63,7 +63,7 @@ export default function ScratchpadPage() {
 
   // Initialize Yjs document and load from local store (works offline)
   useEffect(() => {
-    if (!cryptoInitialized || yjsInitializedRef.current) return;
+    if (!cryptoInitialized || yjsInitialized) return;
 
     let yjsTextInstance: any = null;
     let cancelled = false;
@@ -82,7 +82,6 @@ export default function ScratchpadPage() {
           }
         };
         yjsTextInstance.observe(observer);
-        yjsInitializedRef.current = true;
 
         // Load existing content from local store (works offline - no sessionKeys needed)
         try {
@@ -95,6 +94,7 @@ export default function ScratchpadPage() {
         }
 
         if (!cancelled) {
+          setYjsInitialized(true);
           setIsLoading(false);
         }
 
@@ -117,11 +117,13 @@ export default function ScratchpadPage() {
       cancelled = true;
       cleanupPromise.then(cleanupFn => cleanupFn?.());
     };
-  }, [cryptoInitialized]);
+  }, [cryptoInitialized, yjsInitialized]);
 
-  // Set up sync sending when WebSocket is connected
+  // Set up sync sending when WebSocket is connected AND Yjs is ready
+  // Both conditions must be true — using yjsInitialized (state, not ref)
+  // ensures this effect re-runs when Yjs finishes async initialization
   useEffect(() => {
-    if (!sessionKeys || !yjsInitializedRef.current) return;
+    if (!sessionKeys || !yjsInitialized) return;
 
     let unsubscribe: (() => void) | null = null;
 
@@ -151,30 +153,33 @@ export default function ScratchpadPage() {
         unsubscribeRef.current = null;
       }
     };
-  }, [sessionKeys]);
+  }, [sessionKeys, yjsInitialized]);
 
-  // Handle incoming Yjs updates (skip self-originated events)
+  // Handle incoming Yjs updates via direct WS client handler
+  // This avoids the lastEvent race where a non-scratchpad event can overwrite
+  // lastEvent before React re-renders, causing scratchpad events to be lost
   useEffect(() => {
-    // Skip events from this device to avoid processing our own updates
-    if (lastEvent && lastEvent.type === 'scratchpad:op' && sessionKeys && lastEvent.device_id !== deviceId) {
-      handleIncomingUpdate(lastEvent);
-    }
-  }, [lastEvent, sessionKeys, deviceId]);
+    if (!sessionKeys || !deviceId || !yjsInitialized) return;
 
-  async function handleIncomingUpdate(event: any) {
-    try {
-      const update = await receiveYjsUpdate(event);
-      if (update) {
-        // Apply update to Yjs document
-        await applyYjsUpdate(update);
-        setSyncStatus('synced');
-        // Text will update via Yjs observer
+    const client = getWebSocketClient();
+    const unsubscribe = client.onEvent(async (event) => {
+      if (event.type !== 'scratchpad:op') return;
+      if (event.device_id === deviceId) return;
+
+      try {
+        const update = await receiveYjsUpdate(event);
+        if (update) {
+          await applyYjsUpdate(update);
+          setSyncStatus('synced');
+        }
+      } catch (error) {
+        logger.error('[Scratchpad] Failed to apply update:', error);
+        setSyncStatus('error');
       }
-    } catch (error) {
-      logger.error('[Scratchpad] Failed to apply update:', error);
-      setSyncStatus('error');
-    }
-  }
+    });
+
+    return unsubscribe;
+  }, [sessionKeys, deviceId, yjsInitialized]);
 
   async function handleTextChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const newText = e.target.value;

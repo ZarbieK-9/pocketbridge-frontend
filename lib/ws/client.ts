@@ -790,12 +790,14 @@ export class WebSocketClient {
       await queue.enqueue(event);
       
       // Notify service worker to queue for background sync
-      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      // Skip file transfer events - they're too large for SW cache and useless offline
+      const skipSwQueue = event.type === 'file:chunk' || event.type === 'file:chunk_ack' || event.type === 'file:metadata';
+      if (!skipSwQueue && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
         navigator.serviceWorker.controller.postMessage({
           type: 'QUEUE_EVENT',
           event,
         });
-        
+
         // Register background sync if available
         if ('serviceWorker' in navigator && 'sync' in (await navigator.serviceWorker.ready)) {
           try {

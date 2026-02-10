@@ -13,29 +13,31 @@ export const HMAC_LENGTH = 32 // SHA-256
 // File constraints
 export const MAX_FILE_SIZE = 25 * 1024 * 1024 * 1024 // 25GB
 
-// Chunk size tiers - OPTIMIZED FOR REDIS/SERVER MEMORY
+// Chunk size tiers - MUST fit within WebSocket maxPayload (15MB) AFTER base64 encoding
+// Base64 adds ~33% overhead, so max raw chunk = 15MB / 1.34 ≈ 11.2MB (use 5MB for safety)
 // Small chunks = less Redis memory, more overhead
 // Large chunks = more Redis memory, less overhead
 // For files > 5GB, use WebRTC P2P instead to bypass server entirely!
-export const FILE_CHUNK_SIZE_SMALL = 8 * 1024 * 1024 // 8MB for files < 100MB
-export const FILE_CHUNK_SIZE_MEDIUM = 16 * 1024 * 1024 // 16MB for files 100MB - 1GB
-export const FILE_CHUNK_SIZE_LARGE = 12 * 1024 * 1024 // 12MB for files > 1GB (REDUCED to save Redis memory)
-export const FILE_CHUNK_SIZE_HUGE = 8 * 1024 * 1024 // 8MB for files > 10GB (SMALL chunks to prevent Redis overflow)
+export const FILE_CHUNK_SIZE_SMALL = 5 * 1024 * 1024 // 5MB for files < 100MB (~6.7MB after base64)
+export const FILE_CHUNK_SIZE_MEDIUM = 5 * 1024 * 1024 // 5MB for files 100MB - 1GB (~6.7MB after base64)
+export const FILE_CHUNK_SIZE_LARGE = 5 * 1024 * 1024 // 5MB for files > 1GB (~6.7MB after base64)
+export const FILE_CHUNK_SIZE_HUGE = 4 * 1024 * 1024 // 4MB for files > 10GB (~5.3MB after base64, minimal memory)
 
 // Default chunk size (for backward compatibility)
 export const FILE_CHUNK_SIZE = FILE_CHUNK_SIZE_SMALL
 
-// Parallel chunk uploads - REDUCED for large files to prevent Redis overflow
-export const FILE_PARALLEL_CHUNKS_SMALL = 12 // 12 parallel for small files (~96MB in flight)
-export const FILE_PARALLEL_CHUNKS_MEDIUM = 16 // 16 parallel for medium files (~256MB in flight)
-export const FILE_PARALLEL_CHUNKS_LARGE = 8 // 8 parallel for large files (~96MB in flight - REDUCED)
-export const FILE_PARALLEL_CHUNKS_HUGE = 4 // 4 parallel for huge files (~32MB in flight - MINIMAL to prevent Redis overflow)
+// Parallel chunk uploads - tuned per tier to balance throughput and memory
+export const FILE_PARALLEL_CHUNKS_SMALL = 8 // 8 parallel for small files (~40MB in flight)
+export const FILE_PARALLEL_CHUNKS_MEDIUM = 6 // 6 parallel for medium files (~30MB in flight)
+export const FILE_PARALLEL_CHUNKS_LARGE = 4 // 4 parallel for large files (~20MB in flight)
+export const FILE_PARALLEL_CHUNKS_HUGE = 3 // 3 parallel for huge files (~12MB in flight - MINIMAL)
 
 // Default parallel chunks (for backward compatibility)
 export const FILE_PARALLEL_CHUNKS = FILE_PARALLEL_CHUNKS_SMALL
 
 // File size thresholds
-export const WEBRTC_THRESHOLD = 5 * 1024 * 1024 * 1024 // 5GB - use WebRTC P2P for files larger than this
+export const WEBRTC_THRESHOLD = 100 * 1024 * 1024 // 100MB - use WebRTC P2P for files larger than this
+export const RELAY_MAX_FILE_SIZE = 100 * 1024 * 1024 // 100MB - hard cap for server relay transfers
 export const LARGE_FILE_THRESHOLD = 10 * 1024 * 1024 * 1024 // 10GB - use minimal parallelism
 
 /**
@@ -70,7 +72,7 @@ export function getOptimalParallelChunks(fileSize: number): number {
 
 /**
  * Check if file should use WebRTC P2P transfer (bypass server)
- * Returns true for files > 5GB to prevent Redis overflow
+ * Returns true for files > 100MB to avoid relay overhead
  */
 export function shouldUseWebRTC(fileSize: number): boolean {
   return fileSize > WEBRTC_THRESHOLD

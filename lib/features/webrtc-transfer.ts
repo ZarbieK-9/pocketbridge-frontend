@@ -1,26 +1,32 @@
 /**
  * WebRTC Direct P2P File Transfer
  *
- * Bypasses the server/Redis for large file transfers
+ * Bypasses the server/Redis for large file transfers (>100MB)
  * - Uses WebRTC data channels for direct peer-to-peer transfer
  * - WebSocket only used for signaling (offer/answer/ICE)
  * - No file data touches the server/Redis
- * - Supports unlimited file sizes
- * - Maximum speed (direct connection)
+ * - Chunks stored in IndexedDB (not memory) to support huge files
+ * - Emits events for UI progress tracking
  */
 
 import { createEvent } from '@/lib/sync/event-builder';
-import { decryptPayload } from '@/lib/crypto/encryption';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getWebSocketClient } from '@/lib/ws';
-import { getOptimalChunkSize } from '@/lib/constants';
+import {
+  startTracking,
+  storeChunk,
+  getChunks,
+  deleteTransfer,
+  getTransferProgress,
+} from '@/lib/features/file-transfer-tracker';
 import type { EncryptedEvent } from '@/types';
 
 const WEBRTC_STREAM_ID = 'webrtc:signaling';
-const CHUNK_SIZE = 64 * 1024; // 64KB chunks for WebRTC data channel (recommended)
-const MAX_BUFFER_SIZE = 16 * 1024 * 1024; // 16MB buffer
+const CHUNK_SIZE = 64 * 1024; // 64KB chunks for WebRTC data channel
+const MAX_BUFFER_SIZE = 16 * 1024 * 1024; // 16MB buffer before backpressure
+const CONNECTION_TIMEOUT_MS = 30_000; // 30s to establish connection
 
-interface WebRTCFileTransfer {
+export interface WebRTCFileTransfer {
   fileId: string;
   fileName: string;
   fileSize: number;
@@ -31,6 +37,7 @@ interface WebRTCFileTransfer {
   progress: number; // 0-100
   bytesTransferred: number;
   startTime: number;
+  speed: number; // bytes/sec
   peerConnection?: RTCPeerConnection;
   dataChannel?: RTCDataChannel;
 }
@@ -38,9 +45,49 @@ interface WebRTCFileTransfer {
 // Active transfers
 const activeTransfers = new Map<string, WebRTCFileTransfer>();
 
+// Event listeners for UI integration
+type TransferEventType = 'progress' | 'incoming' | 'complete' | 'failed';
+type TransferEventHandler = (transfer: WebRTCFileTransfer) => void;
+const transferListeners = new Map<TransferEventType, Set<TransferEventHandler>>();
+
+/**
+ * Subscribe to WebRTC transfer events
+ * Returns unsubscribe function
+ */
+export function onTransferEvent(
+  eventType: TransferEventType,
+  handler: TransferEventHandler,
+): () => void {
+  if (!transferListeners.has(eventType)) {
+    transferListeners.set(eventType, new Set());
+  }
+  transferListeners.get(eventType)!.add(handler);
+  return () => {
+    transferListeners.get(eventType)?.delete(handler);
+  };
+}
+
+function emitTransferEvent(eventType: TransferEventType, transfer: WebRTCFileTransfer) {
+  transferListeners.get(eventType)?.forEach(handler => {
+    try {
+      handler(transfer);
+    } catch (err) {
+      console.error('[WebRTC] Transfer event handler error:', err);
+    }
+  });
+}
+
+/**
+ * Get all active WebRTC transfers (for UI)
+ */
+export function getActiveWebRTCTransfers(): WebRTCFileTransfer[] {
+  return Array.from(activeTransfers.values());
+}
+
 /**
  * Send file via WebRTC P2P
- * Large files bypass server/Redis entirely
+ * Returns a promise that resolves with the fileId when the connection is established
+ * and rejects if connection fails (caller should fall back to relay)
  */
 export async function sendFileViaWebRTC(
   file: File,
@@ -54,78 +101,134 @@ export async function sendFileViaWebRTC(
     fileId,
     fileName: file.name,
     fileSize: file.size,
-    mimeType: file.type,
+    mimeType: file.type || 'application/octet-stream',
     senderId: deviceId,
     receiverId: targetDeviceId,
     status: 'connecting',
     progress: 0,
     bytesTransferred: 0,
     startTime: Date.now(),
+    speed: 0,
   };
 
   activeTransfers.set(fileId, transfer);
 
-  try {
-    // Create peer connection
-    const peerConnection = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-      ],
-    });
+  return new Promise<string>(async (resolve, reject) => {
+    let connectionTimeout: ReturnType<typeof setTimeout> | null = null;
+    let resolved = false;
 
-    transfer.peerConnection = peerConnection;
+    try {
+      const peerConnection = new RTCPeerConnection({
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+        ],
+      });
 
-    // Create data channel for file transfer
-    const dataChannel = peerConnection.createDataChannel('fileTransfer', {
-      ordered: true, // Ensure chunks arrive in order
-    });
+      transfer.peerConnection = peerConnection;
 
-    transfer.dataChannel = dataChannel;
+      // Connection timeout — if data channel doesn't open in time, reject
+      connectionTimeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          transfer.status = 'failed';
+          peerConnection.close();
+          activeTransfers.delete(fileId);
+          emitTransferEvent('failed', transfer);
+          reject(new Error('WebRTC connection timed out'));
+        }
+      }, CONNECTION_TIMEOUT_MS);
 
-    // Set up data channel handlers
-    dataChannel.onopen = async () => {
-      console.log('[WebRTC] Data channel opened, starting transfer');
-      transfer.status = 'transferring';
-      await transferFile(file, dataChannel, transfer, onProgress);
-    };
+      // Create data channel
+      const dataChannel = peerConnection.createDataChannel('fileTransfer', {
+        ordered: true,
+      });
+      dataChannel.binaryType = 'arraybuffer';
+      transfer.dataChannel = dataChannel;
 
-    dataChannel.onerror = (error) => {
-      console.error('[WebRTC] Data channel error:', error);
-      transfer.status = 'failed';
-    };
+      dataChannel.onopen = async () => {
+        if (connectionTimeout) clearTimeout(connectionTimeout);
+        if (resolved) return;
+        resolved = true;
 
-    // Handle ICE candidates
-    peerConnection.onicecandidate = async (event) => {
-      if (event.candidate) {
-        // Send ICE candidate via WebSocket signaling
-        await sendSignalingMessage(fileId, targetDeviceId, {
-          type: 'ice-candidate',
-          candidate: event.candidate.toJSON(),
-        });
+        console.log('[WebRTC] Data channel opened, starting transfer');
+        transfer.status = 'transferring';
+        emitTransferEvent('progress', transfer);
+
+        // Resolve immediately so caller knows connection succeeded
+        resolve(fileId);
+
+        // Start sending file data
+        try {
+          await transferFile(file, dataChannel, transfer, onProgress);
+        } catch (err) {
+          console.error('[WebRTC] Transfer failed:', err);
+          transfer.status = 'failed';
+          emitTransferEvent('failed', transfer);
+        }
+      };
+
+      dataChannel.onerror = (error) => {
+        console.error('[WebRTC] Data channel error:', error);
+        if (!resolved) {
+          resolved = true;
+          if (connectionTimeout) clearTimeout(connectionTimeout);
+          transfer.status = 'failed';
+          emitTransferEvent('failed', transfer);
+          reject(new Error('WebRTC data channel error'));
+        }
+      };
+
+      // Handle ICE candidates
+      peerConnection.onicecandidate = async (event) => {
+        if (event.candidate) {
+          await sendSignalingMessage(fileId, targetDeviceId, {
+            type: 'ice-candidate',
+            candidate: event.candidate.toJSON(),
+          });
+        }
+      };
+
+      peerConnection.onconnectionstatechange = () => {
+        if (peerConnection.connectionState === 'failed') {
+          if (!resolved) {
+            resolved = true;
+            if (connectionTimeout) clearTimeout(connectionTimeout);
+            transfer.status = 'failed';
+            emitTransferEvent('failed', transfer);
+            reject(new Error('WebRTC connection failed'));
+          }
+        }
+      };
+
+      // Create and send offer
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+
+      // Calculate total chunks for receiver tracking
+      const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+
+      await sendSignalingMessage(fileId, targetDeviceId, {
+        type: 'offer',
+        sdp: offer.sdp!,
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type || 'application/octet-stream',
+        totalChunks,
+      });
+
+      console.log(`[WebRTC] Offer sent for ${file.name} (${totalChunks} chunks), waiting for answer...`);
+    } catch (error) {
+      if (connectionTimeout) clearTimeout(connectionTimeout);
+      if (!resolved) {
+        resolved = true;
+        transfer.status = 'failed';
+        activeTransfers.delete(fileId);
+        emitTransferEvent('failed', transfer);
+        reject(error);
       }
-    };
-
-    // Create offer
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-
-    // Send offer via WebSocket signaling
-    await sendSignalingMessage(fileId, targetDeviceId, {
-      type: 'offer',
-      sdp: offer.sdp!,
-      fileName: file.name,
-      fileSize: file.size,
-      mimeType: file.type,
-    });
-
-    console.log('[WebRTC] Offer sent, waiting for answer...');
-    return fileId;
-  } catch (error) {
-    console.error('[WebRTC] Failed to initiate transfer:', error);
-    transfer.status = 'failed';
-    throw error;
-  }
+    }
+  });
 }
 
 /**
@@ -137,67 +240,77 @@ async function transferFile(
   transfer: WebRTCFileTransfer,
   onProgress?: (progress: number) => void,
 ): Promise<void> {
-  let offset = 0;
+  return new Promise<void>((resolve, reject) => {
+    let offset = 0;
 
-  const sendChunk = () => {
-    // Check buffer before sending
-    if (dataChannel.bufferedAmount > MAX_BUFFER_SIZE) {
-      // Wait for buffer to drain
-      setTimeout(sendChunk, 100);
-      return;
-    }
-
-    const chunk = file.slice(offset, offset + CHUNK_SIZE);
-    const reader = new FileReader();
-
-    reader.onload = (e) => {
-      const data = e.target?.result as ArrayBuffer;
-
-      try {
-        dataChannel.send(data);
-        offset += data.byteLength;
-        transfer.bytesTransferred = offset;
-        transfer.progress = Math.round((offset / file.size) * 100);
-
-        if (onProgress) {
-          onProgress(transfer.progress);
-        }
-
-        if (offset < file.size) {
-          sendChunk();
-        } else {
-          // Transfer complete
-          dataChannel.send(new TextEncoder().encode('EOF'));
-          transfer.status = 'complete';
-          const duration = (Date.now() - transfer.startTime) / 1000;
-          const speed = file.size / duration / 1024 / 1024; // MB/s
-          console.log(`[WebRTC] Transfer complete: ${file.name} (${speed.toFixed(2)} MB/s)`);
-        }
-      } catch (error) {
-        console.error('[WebRTC] Failed to send chunk:', error);
-        transfer.status = 'failed';
+    const sendChunk = () => {
+      // Backpressure: wait for buffer to drain
+      if (dataChannel.bufferedAmount > MAX_BUFFER_SIZE) {
+        setTimeout(sendChunk, 50);
+        return;
       }
+
+      if (offset >= file.size) {
+        // All data sent — send EOF marker
+        try {
+          dataChannel.send(new TextEncoder().encode('__EOF__'));
+          transfer.status = 'complete';
+          transfer.progress = 100;
+          const duration = (Date.now() - transfer.startTime) / 1000;
+          transfer.speed = file.size / duration;
+          console.log(`[WebRTC] Transfer complete: ${file.name} (${(transfer.speed / 1024 / 1024).toFixed(2)} MB/s)`);
+          emitTransferEvent('complete', transfer);
+          if (onProgress) onProgress(100);
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+        return;
+      }
+
+      const end = Math.min(offset + CHUNK_SIZE, file.size);
+      const chunk = file.slice(offset, end);
+
+      chunk.arrayBuffer().then((data) => {
+        try {
+          dataChannel.send(data);
+          offset += data.byteLength;
+          transfer.bytesTransferred = offset;
+          transfer.progress = Math.round((offset / file.size) * 100);
+
+          const elapsed = (Date.now() - transfer.startTime) / 1000;
+          transfer.speed = elapsed > 0 ? offset / elapsed : 0;
+
+          if (onProgress) onProgress(transfer.progress);
+          emitTransferEvent('progress', transfer);
+
+          // Use setTimeout to avoid blocking the main thread
+          setTimeout(sendChunk, 0);
+        } catch (error) {
+          transfer.status = 'failed';
+          emitTransferEvent('failed', transfer);
+          reject(error);
+        }
+      }).catch((err) => {
+        transfer.status = 'failed';
+        emitTransferEvent('failed', transfer);
+        reject(err);
+      });
     };
 
-    reader.onerror = () => {
-      console.error('[WebRTC] Failed to read file chunk');
-      transfer.status = 'failed';
-    };
-
-    reader.readAsArrayBuffer(chunk);
-  };
-
-  sendChunk();
+    sendChunk();
+  });
 }
 
 /**
- * Handle incoming WebRTC offer
+ * Handle incoming WebRTC offer (receiver side)
+ * Stores chunks in IndexedDB instead of memory to support huge files
  */
 export async function handleWebRTCOffer(
   fileId: string,
   senderId: string,
   offer: RTCSessionDescriptionInit,
-  metadata: { fileName: string; fileSize: number; mimeType: string },
+  metadata: { fileName: string; fileSize: number; mimeType: string; totalChunks: number },
 ): Promise<void> {
   const deviceId = getOrCreateDeviceId();
 
@@ -212,9 +325,20 @@ export async function handleWebRTCOffer(
     progress: 0,
     bytesTransferred: 0,
     startTime: Date.now(),
+    speed: 0,
   };
 
   activeTransfers.set(fileId, transfer);
+  emitTransferEvent('incoming', transfer);
+
+  // Start tracking in IndexedDB (same system as relay path)
+  await startTracking(fileId, {
+    name: metadata.fileName,
+    size: metadata.fileSize,
+    mimeType: metadata.mimeType,
+    totalChunks: metadata.totalChunks,
+    encryptionKey: '', // No per-file encryption for WebRTC (DTLS handles it)
+  }, senderId);
 
   const peerConnection = new RTCPeerConnection({
     iceServers: [
@@ -228,38 +352,78 @@ export async function handleWebRTCOffer(
   // Handle incoming data channel
   peerConnection.ondatachannel = (event) => {
     const dataChannel = event.channel;
+    dataChannel.binaryType = 'arraybuffer';
     transfer.dataChannel = dataChannel;
+    transfer.status = 'transferring';
 
-    const chunks: ArrayBuffer[] = [];
     let receivedBytes = 0;
+    let chunkIndex = 0;
 
-    dataChannel.onmessage = (event) => {
+    dataChannel.onmessage = async (msgEvent) => {
+      const data = msgEvent.data as ArrayBuffer;
+      const bytes = new Uint8Array(data);
+
       // Check for EOF marker
-      if (event.data instanceof ArrayBuffer) {
-        const text = new TextDecoder().decode(new Uint8Array(event.data, 0, 3));
-        if (text === 'EOF') {
-          // Transfer complete - reassemble file
-          const blob = new Blob(chunks, { type: metadata.mimeType });
-          downloadFile(blob, metadata.fileName);
+      if (bytes.length <= 7) {
+        const text = new TextDecoder().decode(bytes);
+        if (text === '__EOF__') {
+          // Transfer complete — reassemble from IndexedDB and download
           transfer.status = 'complete';
+          transfer.progress = 100;
           const duration = (Date.now() - transfer.startTime) / 1000;
-          const speed = metadata.fileSize / duration / 1024 / 1024;
-          console.log(`[WebRTC] Received file: ${metadata.fileName} (${speed.toFixed(2)} MB/s)`);
+          transfer.speed = metadata.fileSize / duration;
+          console.log(`[WebRTC] Received file: ${metadata.fileName} (${(transfer.speed / 1024 / 1024).toFixed(2)} MB/s)`);
+          emitTransferEvent('complete', transfer);
+
+          // Reassemble from IndexedDB
+          try {
+            const storedChunks = await getChunks(fileId);
+            const sorted = storedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+            const blobParts = sorted.map(c => c.data as BlobPart);
+            const blob = new Blob(blobParts, { type: metadata.mimeType || 'application/octet-stream' });
+            downloadFile(blob, metadata.fileName);
+
+            // Clean up
+            await deleteTransfer(fileId);
+          } catch (err) {
+            console.error('[WebRTC] Failed to reassemble file:', err);
+            transfer.status = 'failed';
+            emitTransferEvent('failed', transfer);
+          }
+
+          // Clean up peer connection
+          dataChannel.close();
+          peerConnection.close();
           return;
         }
       }
 
-      chunks.push(event.data);
-      receivedBytes += event.data.byteLength;
-      transfer.bytesTransferred = receivedBytes;
-      transfer.progress = Math.round((receivedBytes / metadata.fileSize) * 100);
+      // Store chunk to IndexedDB (not memory!)
+      try {
+        // Compute simple hash for the chunk
+        const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        const hash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 
-      console.log(`[WebRTC] Progress: ${transfer.progress}% (${receivedBytes}/${metadata.fileSize})`);
+        await storeChunk(fileId, chunkIndex, bytes, hash);
+        chunkIndex++;
+        receivedBytes += data.byteLength;
+        transfer.bytesTransferred = receivedBytes;
+        transfer.progress = Math.round((receivedBytes / metadata.fileSize) * 100);
+
+        const elapsed = (Date.now() - transfer.startTime) / 1000;
+        transfer.speed = elapsed > 0 ? receivedBytes / elapsed : 0;
+
+        emitTransferEvent('progress', transfer);
+      } catch (err) {
+        console.error('[WebRTC] Failed to store chunk:', err);
+      }
     };
 
     dataChannel.onerror = (error) => {
       console.error('[WebRTC] Data channel error:', error);
       transfer.status = 'failed';
+      emitTransferEvent('failed', transfer);
     };
   };
 
@@ -283,10 +447,12 @@ export async function handleWebRTCOffer(
     type: 'answer',
     sdp: answer.sdp!,
   });
+
+  console.log('[WebRTC] Answer sent, waiting for data channel...');
 }
 
 /**
- * Handle WebRTC answer
+ * Handle WebRTC answer (sender side)
  */
 export async function handleWebRTCAnswer(
   fileId: string,
@@ -320,7 +486,7 @@ export async function handleICECandidate(
 
 /**
  * Send signaling message via WebSocket
- * Only signaling goes through server - no file data!
+ * Only signaling goes through server — no file data!
  */
 async function sendSignalingMessage(
   fileId: string,
@@ -376,6 +542,7 @@ export function cancelTransfer(fileId: string): void {
     transfer.dataChannel?.close();
     transfer.peerConnection?.close();
     transfer.status = 'failed';
+    emitTransferEvent('failed', transfer);
     activeTransfers.delete(fileId);
   }
 }

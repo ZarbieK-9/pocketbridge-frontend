@@ -176,31 +176,65 @@ async function handleClipboardUpdate(text) {
   }
 }
 
+// Event types that are too large or useless to queue offline
+const SKIP_QUEUE_TYPES = ['file:chunk', 'file:chunk_ack', 'file:metadata'];
+const MAX_QUEUE_ENTRIES = 50;
+const MAX_EVENT_SIZE = 512 * 1024; // 512KB
+
 // Queue event for later sync
 async function queueEvent(event) {
   try {
+    // Skip file transfer events - too large for cache and useless offline
+    if (event && event.type && SKIP_QUEUE_TYPES.includes(event.type)) {
+      console.log('[SW] Skipping queue for file transfer event:', event.type);
+      return;
+    }
+
+    // Skip events with very large payloads
+    const eventJson = JSON.stringify(event);
+    if (eventJson.length > MAX_EVENT_SIZE) {
+      console.log('[SW] Skipping queue for oversized event:', eventJson.length, 'bytes');
+      return;
+    }
+
     const cache = await caches.open(CACHE_NAME);
     const existing = await cache.match(WS_QUEUE_KEY);
     let queue = [];
-    
+
     if (existing) {
       const data = await existing.json();
       queue = data.queue || [];
     }
-    
+
+    // Enforce max queue size
+    if (queue.length >= MAX_QUEUE_ENTRIES) {
+      console.warn('[SW] Queue full, dropping oldest events');
+      queue = queue.slice(-Math.floor(MAX_QUEUE_ENTRIES / 2));
+    }
+
     queue.push({
       event,
       timestamp: Date.now(),
     });
-    
+
     await cache.put(
       WS_QUEUE_KEY,
       new Response(JSON.stringify({ queue }))
     );
-    
+
     console.log('[SW] Event queued, total:', queue.length);
   } catch (error) {
-    console.error('[SW] Failed to queue event:', error);
+    if (error.name === 'QuotaExceededError') {
+      console.warn('[SW] Quota exceeded, clearing event queue');
+      try {
+        const cache = await caches.open(CACHE_NAME);
+        await cache.put(WS_QUEUE_KEY, new Response(JSON.stringify({ queue: [] })));
+      } catch (clearError) {
+        console.error('[SW] Failed to clear queue after quota error:', clearError);
+      }
+    } else {
+      console.error('[SW] Failed to queue event:', error);
+    }
   }
 }
 

@@ -48,7 +48,15 @@ import { checkRateLimit } from '@/lib/utils/rate-limit';
 import { validateFile } from '@/lib/utils/validation';
 import { ValidationError } from '@/lib/utils/errors';
 import { logger } from '@/lib/utils/logger';
-import { MAX_FILE_SIZE, getOptimalChunkSize, getOptimalParallelChunks } from '@/lib/constants';
+import { MAX_FILE_SIZE, getOptimalChunkSize, getOptimalParallelChunks, shouldUseWebRTC } from '@/lib/constants';
+import {
+  sendFileViaWebRTC,
+  handleWebRTCOffer,
+  handleWebRTCAnswer,
+  handleICECandidate,
+  onTransferEvent,
+  type WebRTCFileTransfer,
+} from '@/lib/features/webrtc-transfer';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/ui/status-badge';
@@ -226,6 +234,9 @@ export default function FilesPage() {
       } else if (lastEvent.type === 'file:resume_request') {
         console.log('[FILES PAGE] Processing file:resume_request event');
         handleResumeRequest(lastEvent);
+      } else if (lastEvent.type === 'webrtc:signal') {
+        console.log('[FILES PAGE] Processing webrtc:signal event');
+        handleWebRTCSignal(lastEvent);
       }
     } else if (lastEvent && !sessionKeys) {
       console.warn('[FILES PAGE] Event received but no session keys!', {
@@ -271,6 +282,108 @@ export default function FilesPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionKeys, deviceId]);
 
+  // Subscribe to WebRTC transfer events for UI progress
+  useEffect(() => {
+    const updateTransfer = (wt: WebRTCFileTransfer) => {
+      setTransfers((prev) => {
+        const exists = prev.find((t) => t.fileId === wt.fileId);
+        if (!exists) return prev;
+        return prev.map((t) =>
+          t.fileId === wt.fileId
+            ? {
+                ...t,
+                progress: wt.progress,
+                speed: wt.speed,
+                status: wt.status === 'complete' ? 'completed' : wt.status === 'failed' ? 'error' : 'uploading',
+              }
+            : t
+        );
+      });
+    };
+
+    const handleIncoming = (wt: WebRTCFileTransfer) => {
+      // Add receiving transfer to UI
+      setTransfers((prev) => {
+        if (prev.find((t) => t.fileId === wt.fileId)) return prev;
+        return [
+          ...prev,
+          {
+            fileId: wt.fileId,
+            name: wt.fileName,
+            size: wt.fileSize,
+            progress: 0,
+            status: 'uploading' as const,
+            direction: 'receiving' as const,
+            startTime: wt.startTime,
+            speed: 0,
+          },
+        ];
+      });
+      toast(`Receiving ${wt.fileName} via P2P...`, 'info');
+    };
+
+    const handleComplete = (wt: WebRTCFileTransfer) => {
+      updateTransfer(wt);
+      const direction = wt.senderId === deviceId ? 'sent' : 'received';
+      toast(`${wt.fileName} ${direction} successfully via P2P!`, 'success');
+      setSyncStatus('synced');
+    };
+
+    const handleFailed = (wt: WebRTCFileTransfer) => {
+      updateTransfer(wt);
+      setSyncStatus('error');
+    };
+
+    const unsubs = [
+      onTransferEvent('progress', updateTransfer),
+      onTransferEvent('incoming', handleIncoming),
+      onTransferEvent('complete', handleComplete),
+      onTransferEvent('failed', handleFailed),
+    ];
+
+    return () => unsubs.forEach((fn) => fn());
+  }, [deviceId]);
+
+  // Handle incoming WebRTC signaling events
+  async function handleWebRTCSignal(event: any) {
+    try {
+      const { decryptPayload } = await import('@/lib/crypto/encryption');
+      const { getSharedEncryptionKey } = await import('@/lib/crypto/shared-key');
+
+      const sharedKey = await getSharedEncryptionKey();
+      if (!sharedKey) {
+        logger.error('[WebRTC] No shared key for signal decryption');
+        return;
+      }
+
+      const payload = await decryptPayload(event.encrypted_payload, sharedKey) as {
+        file_id: string;
+        target_device: string;
+        signal: any;
+      };
+
+      const signal = payload.signal;
+      const fileId = payload.file_id;
+
+      if (signal.type === 'offer') {
+        console.log('[WebRTC] Received offer for', signal.fileName);
+        await handleWebRTCOffer(fileId, event.device_id, { type: 'offer', sdp: signal.sdp }, {
+          fileName: signal.fileName,
+          fileSize: signal.fileSize,
+          mimeType: signal.mimeType,
+          totalChunks: signal.totalChunks,
+        });
+      } else if (signal.type === 'answer') {
+        console.log('[WebRTC] Received answer for', fileId);
+        await handleWebRTCAnswer(fileId, { type: 'answer', sdp: signal.sdp });
+      } else if (signal.type === 'ice-candidate') {
+        await handleICECandidate(fileId, signal.candidate);
+      }
+    } catch (error) {
+      logger.error('[WebRTC] Failed to handle signal:', error);
+    }
+  }
+
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file || !sessionKeys) return;
@@ -292,40 +405,60 @@ export default function FilesPage() {
       }
 
       setSyncStatus('sending');
-      const upload = await startFileUpload(file);
-      const startTime = Date.now();
 
-      const transfer: FileTransfer = {
-        fileId: upload.fileId,
-        name: upload.name,
-        size: upload.size,
-        progress: 0,
-        status: 'uploading',
-        direction: 'sending',
-        startTime,
-        speed: 0,
-      };
-      setTransfers((prev) => [...prev, transfer]);
-      toast(`Sending ${file.name} to all devices...`, 'info');
+      // Use WebRTC P2P for large files (>100MB), relay for small files
+      if (shouldUseWebRTC(file.size)) {
+        // WebRTC P2P path — file data goes direct, only signaling through server
+        const startTime = Date.now();
+        const fileId = crypto.randomUUID();
 
-      // Upload chunks with speed tracking
-      await uploadFileInChunks(file, upload, (progress) => {
-        const elapsed = (Date.now() - startTime) / 1000; // seconds
-        const bytesTransferred = (progress / 100) * file.size;
-        const speed = elapsed > 0 ? bytesTransferred / elapsed : 0;
+        const transfer: FileTransfer = {
+          fileId,
+          name: file.name,
+          size: file.size,
+          progress: 0,
+          status: 'uploading',
+          direction: 'sending',
+          startTime,
+          speed: 0,
+        };
+        setTransfers((prev) => [...prev, transfer]);
+        toast(`Sending ${file.name} via P2P (${(file.size / 1024 / 1024).toFixed(0)}MB)...`, 'info');
 
-        setTransfers((prev) =>
-          prev.map((t) =>
-            t.fileId === upload.fileId
-              ? { ...t, progress, speed, status: progress === 100 ? 'completed' : 'uploading' }
-              : t
-          )
-        );
-      });
+        try {
+          await sendFileViaWebRTC(file, '*', (progress) => {
+            const elapsed = (Date.now() - startTime) / 1000;
+            const bytesTransferred = (progress / 100) * file.size;
+            const speed = elapsed > 0 ? bytesTransferred / elapsed : 0;
 
-      // Mark sync as complete after upload finishes
+            setTransfers((prev) =>
+              prev.map((t) =>
+                t.fileId === fileId
+                  ? { ...t, progress, speed, status: progress === 100 ? 'completed' : 'uploading' }
+                  : t
+              )
+            );
+          });
+          setSyncStatus('synced');
+        } catch (webrtcError) {
+          // WebRTC failed — fall back to relay
+          logger.warn('[FILES] WebRTC failed, falling back to relay', {
+            error: webrtcError instanceof Error ? webrtcError.message : String(webrtcError),
+          });
+          toast('P2P connection failed, using server relay instead...', 'info');
+
+          // Remove the WebRTC transfer entry
+          setTransfers((prev) => prev.filter((t) => t.fileId !== fileId));
+
+          // Fall through to relay path below
+          await uploadViaRelay(file);
+        }
+      } else {
+        // Relay path — small files go through server
+        await uploadViaRelay(file);
+      }
+
       setSyncStatus('synced');
-      toast(`${file.name} sent successfully!`, 'success');
     } catch (error) {
       logger.error('Failed to upload file', error);
       setSyncStatus('error');
@@ -335,6 +468,40 @@ export default function FilesPage() {
         toast('Failed to upload file. Please try again.', 'error');
       }
     }
+  }
+
+  async function uploadViaRelay(file: File) {
+    const upload = await startFileUpload(file);
+    const startTime = Date.now();
+
+    const transfer: FileTransfer = {
+      fileId: upload.fileId,
+      name: upload.name,
+      size: upload.size,
+      progress: 0,
+      status: 'uploading',
+      direction: 'sending',
+      startTime,
+      speed: 0,
+    };
+    setTransfers((prev) => [...prev, transfer]);
+    toast(`Sending ${file.name} via relay...`, 'info');
+
+    await uploadFileInChunks(file, upload, (progress) => {
+      const elapsed = (Date.now() - startTime) / 1000;
+      const bytesTransferred = (progress / 100) * file.size;
+      const speed = elapsed > 0 ? bytesTransferred / elapsed : 0;
+
+      setTransfers((prev) =>
+        prev.map((t) =>
+          t.fileId === upload.fileId
+            ? { ...t, progress, speed, status: progress === 100 ? 'completed' : 'uploading' }
+            : t
+        )
+      );
+    });
+
+    toast(`${file.name} sent successfully!`, 'success');
   }
 
   async function uploadFileInChunks(
