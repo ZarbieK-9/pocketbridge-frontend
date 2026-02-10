@@ -13,13 +13,14 @@
 import { createEvent } from '@/lib/sync/event-builder';
 import { decryptPayload } from '@/lib/crypto/encryption';
 import { getEventsByStream, saveFileChunk, getFileChunks, deleteFileChunks } from '@/lib/sync/db';
+import type { FileChunk } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getWebSocketClient } from '@/lib/ws';
 import { MAX_FILE_SIZE, getOptimalChunkSize } from '@/lib/constants';
 import { generateSymmetricKey, importAESKey, exportAESKey } from '@/lib/crypto/keys';
 import { encryptPayload, uint8ArrayToBase64 } from '@/lib/crypto/encryption';
 import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
-import type { EncryptedEvent, FileChunkPayload, FileMetadataPayload, EventPayload, FileChunk, FileResumeRequestPayload, FileChunkAckPayload } from '@/types';
+import type { EncryptedEvent, FileChunkPayload, FileMetadataPayload, EventPayload, FileResumeRequestPayload, FileChunkAckPayload } from '@/types';
 
 const FILES_STREAM_ID = 'files:main';
 

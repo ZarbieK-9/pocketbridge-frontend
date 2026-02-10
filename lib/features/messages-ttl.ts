@@ -13,6 +13,7 @@ import { getEventsByStream } from '@/lib/sync/db';
 import { createEvent } from '@/lib/sync/event-builder';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getWebSocketClient } from '@/lib/ws';
+import type { MessageReadReceiptPayload } from '@/types';
 
 const MESSAGES_STREAM_ID = 'messages:main';
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
@@ -256,7 +257,7 @@ export async function markMessageAsRead(messageId: string): Promise<void> {
   const { getOrCreateDeviceName } = await import('@/lib/utils/device');
   const deviceName = getOrCreateDeviceName();
 
-  const payload: ReadReceipt = {
+  const payload: MessageReadReceiptPayload = {
     message_id: messageId,
     read_at: Date.now(),
     reader_device_id: deviceId,

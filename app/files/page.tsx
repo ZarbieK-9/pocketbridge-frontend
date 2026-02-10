@@ -549,7 +549,7 @@ export default function FilesPage() {
         const { importAESKey } = await import('@/lib/crypto/keys');
         const encryptionKeyBytes = Uint8Array.from(atob(metadata.encryption_key), c => c.charCodeAt(0));
         const fileEncryptionKey = await importAESKey(encryptionKeyBytes);
-        chunk = await receiveFileChunk(event, fileEncryptionKey);
+        chunk = await receiveFileChunk(event, fileEncryptionKey, fileId);
       } else {
         // No per-file encryption (mobile sender): payload.data is raw base64
         const dataBytes = Uint8Array.from(atob(payload.data), c => c.charCodeAt(0));

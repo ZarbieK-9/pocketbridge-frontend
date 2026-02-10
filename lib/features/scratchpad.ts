@@ -19,7 +19,7 @@ import { getEventsByStream } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getWebSocketClient } from '@/lib/ws';
 import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
-import type { EncryptedEvent, ScratchpadOpPayload } from '@/types';
+import type { EncryptedEvent, ScratchpadOpPayload, ScratchpadBatchPayload } from '@/types';
 
 // For Phase 1, we'll use a simple operational transform approach
 // In production, you'd use Yjs or Automerge
@@ -152,7 +152,7 @@ export async function sendBatchedOps(
   const wsClient = getWebSocketClient();
   const userId = wsClient.getUserId() || undefined;
 
-  const payload: BatchOpPayload = {
+  const payload: ScratchpadBatchPayload = {
     ops: operations.map(op => JSON.stringify(op)),
     version: Date.now(),
     count: operations.length,

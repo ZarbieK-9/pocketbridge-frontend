@@ -49,13 +49,17 @@ export type EventType =
   | 'scratchpad:update'
   | 'message:text'
   | 'message:self_destruct'
+  | 'message:deleted'
+  | 'message:read_receipt'
+  | 'scratchpad:batch'
   | 'file:chunk'
   | 'file:metadata'
   | 'file:complete'
   | 'file:chunk_ack'
   | 'file:resume_request'
   | 'device:handshake'
-  | 'device:ack';
+  | 'device:ack'
+  | 'webrtc:signal';
 
 // Decrypted event payload types
 export interface ClipboardTextPayload {
@@ -108,6 +112,30 @@ export interface FileCompletePayload {
   completed_at: number; // Unix timestamp when transfer was completed
 }
 
+export interface ScratchpadBatchPayload {
+  ops: string[]; // Array of serialized operations
+  version: number;
+  count: number;
+}
+
+export interface MessageDeletedPayload {
+  deleted_event_id: string;
+  deleted_at: number;
+}
+
+export interface MessageReadReceiptPayload {
+  message_id: string;
+  read_at: number;
+  reader_device_id: string;
+  reader_device_name?: string;
+}
+
+export interface WebRTCSignalPayload {
+  file_id: string;
+  target_device: string;
+  signal: unknown;
+}
+
 export interface FileChunkAckPayload {
   file_id: string;
   chunk_index: number;
@@ -125,13 +153,17 @@ export type EventPayload =
   | ClipboardTextPayload
   | ScratchpadOpPayload
   | ScratchpadUpdatePayload
+  | ScratchpadBatchPayload
   | MessageTextPayload
   | MessageSelfDestructPayload
+  | MessageDeletedPayload
+  | MessageReadReceiptPayload
   | FileChunkPayload
   | FileMetadataPayload
   | FileCompletePayload
   | FileChunkAckPayload
-  | FileResumeRequestPayload;
+  | FileResumeRequestPayload
+  | WebRTCSignalPayload;
 
 // Crypto key types
 export interface Ed25519KeyPair {
