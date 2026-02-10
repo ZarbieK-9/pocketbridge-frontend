@@ -8,7 +8,7 @@
  * - Offline edit convergence
  */
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { useCrypto } from '@/hooks/use-crypto';
 import { logger } from '@/lib/utils/logger';
@@ -18,6 +18,7 @@ import {
   setYjsTextContent,
   sendYjsUpdate,
   receiveYjsUpdate,
+  loadYjsState,
   rebuildYjsFromEvents,
   onYjsUpdate,
   applyYjsUpdate,
@@ -83,9 +84,13 @@ export default function ScratchpadPage() {
         };
         yjsTextInstance.observe(observer);
 
-        // Load existing content from local store (works offline - no sessionKeys needed)
+        // Load existing content: try localStorage first, then fall back to IndexedDB events
         try {
-          const loadedText = await rebuildYjsFromEvents();
+          let loadedText = await loadYjsState();
+          if (loadedText === null) {
+            // No localStorage state — migrate from old IndexedDB events
+            loadedText = await rebuildYjsFromEvents();
+          }
           if (!cancelled) {
             setText(loadedText);
           }

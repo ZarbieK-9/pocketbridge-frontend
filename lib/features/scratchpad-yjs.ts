@@ -1,17 +1,10 @@
 /**
- * Live Scratchpad Feature - Phase 1 (Yjs Implementation)
- * 
+ * Live Scratchpad Feature - Simplified Direct Sync
+ *
  * CRDT-based collaborative text editor using Yjs
- * - Offline edits converge
- * - Real-time synchronization
- * - Battle-tested CRDT library
- * 
- * CRDT Choice: Yjs
- * - Mature, battle-tested
- * - Efficient binary format
- * - Good offline support
- * - Text editing optimized
- * - Used by many production apps
+ * - Direct WebSocket relay (no event queue, no device_seq, no ACKs)
+ * - localStorage persistence for Yjs CRDT state
+ * - Yjs handles convergence natively
  */
 
 // Dynamic import to avoid SSR issues
@@ -23,8 +16,7 @@ async function getYjs() {
   }
   return Y;
 }
-import { createEvent } from '@/lib/sync/event-builder';
-import { decryptPayload, uint8ArrayToBase64 } from '@/lib/crypto/encryption';
+import { encryptPayload, decryptPayload, uint8ArrayToBase64 } from '@/lib/crypto/encryption';
 import { getEventsByStream } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getWebSocketClient } from '@/lib/ws';
@@ -32,6 +24,7 @@ import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
 import type { EncryptedEvent, ScratchpadUpdatePayload } from '@/types';
 
 const SCRATCHPAD_STREAM_ID = 'scratchpad:main';
+const YJS_STATE_KEY = 'pocketbridge_yjs_state';
 
 /**
  * Yjs document for scratchpad
@@ -77,36 +70,93 @@ export function decodeYjsUpdate(encoded: string): Uint8Array {
 }
 
 /**
- * Send Yjs update as event
+ * Save Yjs document state to localStorage
  */
-export async function sendYjsUpdate(
-  update: Uint8Array,
-): Promise<EncryptedEvent> {
-  const deviceId = getOrCreateDeviceId();
-  const wsClient = getWebSocketClient();
-  const userId = wsClient.getUserId() || undefined;
-  
+export async function saveYjsState(): Promise<void> {
+  if (!yjsDoc) return;
+  try {
+    const Yjs = await getYjs();
+    const state = Yjs.encodeStateAsUpdate(yjsDoc);
+    const base64 = uint8ArrayToBase64(state);
+    localStorage.setItem(YJS_STATE_KEY, base64);
+  } catch (error) {
+    console.error('[Scratchpad] Failed to save Yjs state:', error);
+  }
+}
+
+/**
+ * Load Yjs document state from localStorage
+ * Returns the text content, or null if no saved state
+ */
+export async function loadYjsState(): Promise<string | null> {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const saved = localStorage.getItem(YJS_STATE_KEY);
+    if (!saved) return null;
+
+    if (!yjsDoc) {
+      await initYjsDoc();
+    }
+
+    const Yjs = await getYjs();
+    const state = decodeYjsUpdate(saved);
+    Yjs.applyUpdate(yjsDoc!, state, 'remote');
+
+    return yjsText!.toString();
+  } catch (error) {
+    console.error('[Scratchpad] Failed to load Yjs state:', error);
+    return null;
+  }
+}
+
+/**
+ * Send Yjs update directly via WebSocket
+ * Bypasses event queue — no device_seq, no IndexedDB, no ACKs
+ */
+export async function sendYjsUpdate(update: Uint8Array): Promise<void> {
+  const sharedKey = await getSharedEncryptionKey();
+  if (!sharedKey) {
+    console.error('[Scratchpad] Shared encryption key not available for send');
+    return;
+  }
+
   const payload: ScratchpadUpdatePayload = {
     update: encodeYjsUpdate(update),
     type: 'yjs_update',
   };
 
-  const event = await createEvent(
-    SCRATCHPAD_STREAM_ID,
-    deviceId,
-    'scratchpad:op',
-    payload,
-    userId,
+  // Encrypt payload with shared key (E2E encryption)
+  const { ciphertext, nonce } = await encryptPayload(payload, sharedKey);
+
+  // Combine nonce + ciphertext into single base64 string (same format as regular events)
+  const nonceBytes = new Uint8Array(
+    nonce.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []
   );
+  const ciphertextBytes = Uint8Array.from(atob(ciphertext), c => c.charCodeAt(0));
+  const combined = new Uint8Array(nonceBytes.length + ciphertextBytes.length);
+  combined.set(nonceBytes, 0);
+  combined.set(ciphertextBytes, nonceBytes.length);
+  const encryptedPayload = uint8ArrayToBase64(combined);
 
-  // Sync immediately to send the event over WebSocket
-  await wsClient.syncPending();
+  const deviceId = getOrCreateDeviceId();
+  const wsClient = getWebSocketClient();
 
-  return event;
+  // Send directly over WebSocket — server just relays, no storage
+  wsClient.sendDirect({
+    type: 'scratchpad_sync',
+    payload: {
+      encrypted_payload: encryptedPayload,
+      device_id: deviceId,
+    },
+  });
+
+  // Persist state locally after each send
+  await saveYjsState();
 }
 
 /**
- * Receive Yjs update from event
+ * Receive Yjs update from event (works for both old events and new direct sync)
  */
 export async function receiveYjsUpdate(
   event: EncryptedEvent,
@@ -135,7 +185,7 @@ export async function receiveYjsUpdate(
 }
 
 /**
- * Apply Yjs update to document (from remote)
+ * Apply Yjs update to document (from remote) and persist
  */
 export async function applyYjsUpdate(update: Uint8Array): Promise<void> {
   if (!yjsDoc) {
@@ -144,14 +194,9 @@ export async function applyYjsUpdate(update: Uint8Array): Promise<void> {
   const Yjs = await getYjs();
   // Apply with 'remote' origin to avoid triggering onYjsUpdate send loop
   Yjs.applyUpdate(yjsDoc!, update, 'remote');
-}
 
-/**
- * Get current text from Yjs document
- */
-export async function getYjsTextContent(): Promise<string> {
-  const text = await getYjsText();
-  return text.toString();
+  // Persist state after receiving remote update
+  await saveYjsState();
 }
 
 /**
@@ -176,18 +221,15 @@ export async function setYjsTextContent(content: string): Promise<void> {
 }
 
 /**
- * Rebuild Yjs document from all events
- * NOTE: This applies updates to the existing document instead of replacing it,
- * to preserve any registered event handlers (onYjsUpdate callbacks)
+ * Rebuild Yjs document from stored events (migration fallback)
+ * Used when no localStorage state exists but old events are in IndexedDB
  */
 export async function rebuildYjsFromEvents(): Promise<string> {
   try {
-    // Ensure we have a document to work with
     if (!yjsDoc) {
       await initYjsDoc();
     }
 
-    // Get current user ID to filter events (avoids loading stale events from old identity)
     const wsClient = getWebSocketClient();
     const userId = wsClient.getUserId();
 
@@ -196,16 +238,21 @@ export async function rebuildYjsFromEvents(): Promise<string> {
 
     const Yjs = await getYjs();
 
-    // Apply all updates to existing document (preserves handlers)
     for (const event of events) {
       const update = await receiveYjsUpdate(event);
       if (update) {
-        // Apply with 'remote' origin to avoid triggering send loop
         Yjs.applyUpdate(yjsDoc!, update, 'remote');
       }
     }
 
-    return yjsText!.toString();
+    const content = yjsText!.toString();
+
+    // Migrate: save to localStorage so we don't need events next time
+    if (content) {
+      await saveYjsState();
+    }
+
+    return content;
   } catch (error) {
     console.error('[Scratchpad] Failed to rebuild Yjs document:', error);
     return '';
@@ -237,4 +284,3 @@ export async function onYjsUpdate(
     yjsDoc?.off('update', handler);
   };
 }
-

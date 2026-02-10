@@ -966,6 +966,26 @@ export class WebSocketClient {
         case 'pairing_failed':
           this.handlePairingFailed(message.payload as { error: string });
           break;
+        case 'scratchpad_sync': {
+          // Direct scratchpad relay - dispatch to event handlers as synthetic event
+          const spPayload = message.payload as { encrypted_payload: string; device_id: string };
+          if (spPayload?.encrypted_payload && spPayload?.device_id) {
+            const syntheticEvent = {
+              type: 'scratchpad:op',
+              encrypted_payload: spPayload.encrypted_payload,
+              device_id: spPayload.device_id,
+              event_id: '',
+              user_id: '',
+              device_seq: 0,
+              stream_id: 'scratchpad:main',
+              stream_seq: 0,
+            } as EncryptedEvent;
+            this.eventHandlers.forEach(handler => {
+              try { handler(syntheticEvent); } catch (e) { logger.error('Event handler error', e); }
+            });
+          }
+          break;
+        }
         case 'device_status_changed':
         case 'device_presence':
           this.emitSystem((message.payload || message) as SystemMessage);
@@ -1681,6 +1701,14 @@ export class WebSocketClient {
     const events = [...this.fileEventBuffer];
     this.fileEventBuffer = [];
     return events;
+  }
+
+  /**
+   * Send a message directly over WebSocket (bypasses event queue)
+   * Used for scratchpad sync and other lightweight real-time messages
+   */
+  sendDirect(message: WSMessage): void {
+    this.send(message);
   }
 
   /**

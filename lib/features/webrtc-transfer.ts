@@ -45,6 +45,9 @@ export interface WebRTCFileTransfer {
 // Active transfers
 const activeTransfers = new Map<string, WebRTCFileTransfer>();
 
+// ICE candidate queue — candidates that arrive before setRemoteDescription
+const pendingICECandidates = new Map<string, RTCIceCandidateInit[]>();
+
 // Event listeners for UI integration
 type TransferEventType = 'progress' | 'incoming' | 'complete' | 'failed';
 type TransferEventHandler = (transfer: WebRTCFileTransfer) => void;
@@ -251,20 +254,33 @@ async function transferFile(
       }
 
       if (offset >= file.size) {
-        // All data sent — send EOF marker
-        try {
-          dataChannel.send(new TextEncoder().encode('__EOF__'));
-          transfer.status = 'complete';
-          transfer.progress = 100;
-          const duration = (Date.now() - transfer.startTime) / 1000;
-          transfer.speed = file.size / duration;
-          console.log(`[WebRTC] Transfer complete: ${file.name} (${(transfer.speed / 1024 / 1024).toFixed(2)} MB/s)`);
-          emitTransferEvent('complete', transfer);
-          if (onProgress) onProgress(100);
-          resolve();
-        } catch (err) {
-          reject(err);
-        }
+        // All chunks fed to buffer — wait for buffer to drain before sending EOF
+        // This ensures all data has actually left the sender before marking complete
+        const waitForDrain = () => {
+          if (dataChannel.bufferedAmount > 0) {
+            // Update progress to show "flushing" state
+            transfer.progress = 99;
+            emitTransferEvent('progress', transfer);
+            setTimeout(waitForDrain, 100);
+            return;
+          }
+
+          try {
+            dataChannel.send(new TextEncoder().encode('__EOF__'));
+            transfer.status = 'complete';
+            transfer.progress = 100;
+            const duration = (Date.now() - transfer.startTime) / 1000;
+            transfer.speed = file.size / duration;
+            console.log(`[WebRTC] Transfer complete: ${file.name} (${(transfer.speed / 1024 / 1024).toFixed(2)} MB/s)`);
+            emitTransferEvent('complete', transfer);
+            if (onProgress) onProgress(100);
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        };
+
+        waitForDrain();
         return;
       }
 
@@ -466,6 +482,16 @@ export async function handleWebRTCAnswer(
 
   await transfer.peerConnection.setRemoteDescription(answer);
   console.log('[WebRTC] Answer received, connection established');
+
+  // Flush any ICE candidates that arrived before the remote description was set
+  const queued = pendingICECandidates.get(fileId);
+  if (queued && queued.length > 0) {
+    console.log(`[WebRTC] Flushing ${queued.length} queued ICE candidates`);
+    for (const candidate of queued) {
+      await transfer.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+    pendingICECandidates.delete(fileId);
+  }
 }
 
 /**
@@ -478,6 +504,16 @@ export async function handleICECandidate(
   const transfer = activeTransfers.get(fileId);
   if (!transfer?.peerConnection) {
     console.error('[WebRTC] No active transfer found for ICE candidate');
+    return;
+  }
+
+  // Queue ICE candidates if remote description hasn't been set yet
+  if (!transfer.peerConnection.remoteDescription) {
+    if (!pendingICECandidates.has(fileId)) {
+      pendingICECandidates.set(fileId, []);
+    }
+    pendingICECandidates.get(fileId)!.push(candidate);
+    console.log(`[WebRTC] Queued ICE candidate (no remote description yet)`);
     return;
   }
 
@@ -544,5 +580,6 @@ export function cancelTransfer(fileId: string): void {
     transfer.status = 'failed';
     emitTransferEvent('failed', transfer);
     activeTransfers.delete(fileId);
+    pendingICECandidates.delete(fileId);
   }
 }

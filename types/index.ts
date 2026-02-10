@@ -266,7 +266,8 @@ export interface WSMessage {
     | 'complete_pairing'
     | 'pairing_completed'
     | 'pairing_failed'
-    | 'device_revoked';
+    | 'device_revoked'
+    | 'scratchpad_sync';
   payload: unknown;
 }
 
