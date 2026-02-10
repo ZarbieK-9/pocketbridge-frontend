@@ -9,6 +9,7 @@ import { STORAGE_KEYS } from '@/lib/constants';
 import { addEvent, getPendingEvents, getDatabase, deleteAcknowledgedEvents, deleteOrphanedEvents } from './db';
 import { STORE_EVENTS } from '@/lib/constants';
 import type { EncryptedEvent, QueueStatus } from '@/types';
+import { AtomicSequenceGenerator } from './atomic-sequence';
 
 /**
  * Event queue manager for offline-first operation - Phase 1
@@ -17,13 +18,12 @@ import type { EncryptedEvent, QueueStatus } from '@/types';
  */
 export class EventQueue {
   private lastAckDeviceSeq: number = 0; // Single value for this device
-  private deviceSeq: number = 0; // Monotonic sequence for this device
   private readonly MAX_QUEUE_SIZE = 10000; // Maximum events in queue
   private readonly MAX_QUEUE_SIZE_BYTES = 100 * 1024 * 1024; // 100MB max
+  private inFlightEvents = new Set<string>(); // Track events being sent (prevents duplicate sends)
 
   constructor() {
     this.loadLastAckDeviceSeq();
-    this.loadDeviceSeq();
   }
 
   /**
@@ -54,15 +54,12 @@ export class EventQueue {
   }
 
   /**
-   * Load device sequence number from localStorage
+   * Load device sequence number from localStorage (deprecated)
+   * Now handled by AtomicSequenceGenerator
    */
   private loadDeviceSeq(): void {
-    if (typeof window === 'undefined') return;
-
-    const stored = localStorage.getItem('pocketbridge_device_seq');
-    if (stored) {
-      this.deviceSeq = Number.parseInt(stored, 10) || 0;
-    }
+    // No-op: sequence is now managed by AtomicSequenceGenerator
+    // This method kept for backwards compatibility
   }
 
   /**
@@ -80,7 +77,7 @@ export class EventQueue {
    * IMPORTANT: Always trust the server's value. If server says 0 (e.g., after pairing reset),
    * we MUST update our local state even if our local value is higher.
    */
-  setLastAckFromServer(seq: number): void {
+  async setLastAckFromServer(seq: number): Promise<void> {
     // Ensure seq is a number (defensive against string values from server)
     const numSeq = typeof seq === 'string' ? parseInt(seq, 10) : seq;
     if (isNaN(numSeq)) {
@@ -97,63 +94,125 @@ export class EventQueue {
       this.saveLastAckDeviceSeq();
     }
     // Keep device sequence ahead of lastAck
-    this.syncDeviceSeq(this.lastAckDeviceSeq);
+    await this.syncDeviceSeq(this.lastAckDeviceSeq);
   }
 
   /**
-   * Save device sequence number to localStorage
+   * Save device sequence number to localStorage (deprecated)
+   * Now handled by AtomicSequenceGenerator
    */
   private saveDeviceSeq(): void {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem('pocketbridge_device_seq', this.deviceSeq.toString());
+    // No-op: sequence is now managed by AtomicSequenceGenerator
   }
 
   /**
-   * Get next device sequence number (monotonic)
+   * Get next device sequence number (monotonic, cross-tab safe)
+   * Uses atomic sequence generator to prevent duplicate sequences across tabs
    */
-  getNextSeq(): number {
-    this.deviceSeq++;
-    this.saveDeviceSeq();
-    return this.deviceSeq;
+  async getNextSeq(): Promise<number> {
+    return await AtomicSequenceGenerator.getNextSeq();
   }
 
   /**
    * Sync device sequence to ensure it's at least lastAckDeviceSeq + 1
    * This prevents sending events with device_seq <= last_ack_device_seq
    */
-  syncDeviceSeq(lastAckDeviceSeq: number): void {
+  async syncDeviceSeq(lastAckDeviceSeq: number): Promise<void> {
     // Ensure deviceSeq is at least lastAckDeviceSeq + 1
     // This way the next event will have device_seq > lastAckDeviceSeq
-    if (this.deviceSeq <= lastAckDeviceSeq) {
-      this.deviceSeq = lastAckDeviceSeq + 1;
-      this.saveDeviceSeq();
-      console.log(`[Phase1] Synced deviceSeq to ${this.deviceSeq} (lastAckDeviceSeq: ${lastAckDeviceSeq})`);
+    const currentSeq = AtomicSequenceGenerator.getCurrentSeq();
+    if (currentSeq <= lastAckDeviceSeq) {
+      const newSeq = lastAckDeviceSeq + 1;
+      await AtomicSequenceGenerator.setSeq(newSeq);
+      console.log(`[Phase1] Synced deviceSeq to ${newSeq} (lastAckDeviceSeq: ${lastAckDeviceSeq})`);
     }
   }
 
   /**
    * Enqueue an encrypted event
-   * Enforces queue size limits
+   * Enforces queue size limits and handles storage quota
    */
   async enqueue(event: EncryptedEvent): Promise<void> {
-    // Check queue size before adding
-    const pending = await this.getPending();
-    
-    // Check count limit
-    if (pending.length >= this.MAX_QUEUE_SIZE) {
-      console.warn('[Queue] Queue size limit reached, removing oldest events');
-      await this.evictOldestEvents(100); // Remove 100 oldest
-    }
+    try {
+      // Check storage quota BEFORE adding (proactive)
+      if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
+        try {
+          const estimate = await navigator.storage.estimate();
+          const usage = (estimate.usage || 0) / (estimate.quota || 1);
 
-    // Check size limit (approximate)
-    const eventSize = event.encrypted_payload.length;
-    const totalSize = pending.reduce((sum, e) => sum + e.encrypted_payload.length, 0);
-    if (totalSize + eventSize > this.MAX_QUEUE_SIZE_BYTES) {
-      console.warn('[Queue] Queue size (bytes) limit reached, removing oldest events');
-      await this.evictOldestEvents(100);
-    }
+          // If using > 90% of quota, evict aggressively
+          if (usage > 0.9) {
+            console.warn(`[Queue] Storage quota at ${Math.round(usage * 100)}%, evicting old events`);
+            await this.evictOldestEvents(500); // Evict more aggressively
+          }
+        } catch (estimateError) {
+          // Some browsers don't support storage.estimate()
+          console.debug('[Queue] Storage estimate not supported:', estimateError);
+        }
+      }
 
-    await addEvent(event);
+      // Check queue size before adding
+      const pending = await this.getPending();
+
+      // Check count limit
+      if (pending.length >= this.MAX_QUEUE_SIZE) {
+        console.warn('[Queue] Queue size limit reached, removing oldest events');
+        await this.evictOldestEvents(100); // Remove 100 oldest
+      }
+
+      // Check size limit (approximate)
+      const eventSize = event.encrypted_payload.length;
+      const totalSize = pending.reduce((sum, e) => sum + e.encrypted_payload.length, 0);
+      if (totalSize + eventSize > this.MAX_QUEUE_SIZE_BYTES) {
+        console.warn('[Queue] Queue size (bytes) limit reached, removing oldest events');
+        await this.evictOldestEvents(100);
+      }
+
+      await addEvent(event);
+    } catch (error: any) {
+      // Handle QuotaExceededError gracefully
+      if (error.name === 'QuotaExceededError' || error.code === 22) {
+        console.error('[Queue] Storage quota exceeded, attempting emergency eviction');
+
+        // Emergency eviction - remove 1000 oldest events
+        try {
+          await this.evictOldestEvents(1000);
+        } catch (evictError) {
+          console.error('[Queue] Emergency eviction failed:', evictError);
+        }
+
+        // Retry adding the event once
+        try {
+          await addEvent(event);
+          console.log('[Queue] Event added after emergency eviction');
+        } catch (retryError: any) {
+          // Still failed - notify user via custom event
+          this.notifyStorageFull();
+          throw new Error(
+            'Storage quota exceeded. Please reconnect to sync data or free up browser storage.'
+          );
+        }
+      } else {
+        // Re-throw other errors
+        throw error;
+      }
+    }
+  }
+
+  /**
+   * Notify user that storage is full
+   * Dispatches custom event that UI can listen to
+   */
+  private notifyStorageFull(): void {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('pocketbridge-storage-quota-exceeded', {
+        detail: {
+          message: 'Local storage full. Reconnect to sync data or clear browser storage.',
+          timestamp: Date.now(),
+        }
+      }));
+      console.error('[Queue] Storage quota exceeded - user notification dispatched');
+    }
   }
 
   /**
@@ -205,19 +264,60 @@ export class EventQueue {
   /**
    * Get all pending events that need to be synced
    * Only returns events from this device to avoid resending other devices' events
+   * Filters out events that are currently in-flight to prevent duplicates
    */
   async getPending(): Promise<EncryptedEvent[]> {
-    return await getPendingEvents(this.lastAckDeviceSeq, this.getDeviceId());
+    const allPending = await getPendingEvents(this.lastAckDeviceSeq, this.getDeviceId());
+
+    // Filter out events currently being sent (prevents duplicate sends during network flapping)
+    return allPending.filter(e => !this.inFlightEvents.has(e.event_id));
+  }
+
+  /**
+   * Mark event as in-flight (being sent)
+   * Call this before sending an event to prevent duplicate sends
+   */
+  markInFlight(eventId: string): void {
+    this.inFlightEvents.add(eventId);
+  }
+
+  /**
+   * Remove event from in-flight set
+   * Call this after event is acknowledged OR if send fails
+   */
+  clearInFlight(eventId: string): void {
+    this.inFlightEvents.delete(eventId);
+  }
+
+  /**
+   * Get count of events currently being sent
+   */
+  getInFlightCount(): number {
+    return this.inFlightEvents.size;
   }
 
   /**
    * Mark events up to a device sequence number as acknowledged
+   * Also clears events from in-flight tracking
    */
-  acknowledge(deviceId: string, seq: number): void {
+  async acknowledge(deviceId: string, seq: number): Promise<void> {
     // Phase 1: Only acknowledge events from this device
     if (deviceId === this.getDeviceId()) {
       this.lastAckDeviceSeq = Math.max(this.lastAckDeviceSeq, seq);
       this.saveLastAckDeviceSeq();
+
+      // Clear acknowledged events from in-flight set
+      // Get all events up to this sequence and remove from tracking
+      try {
+        const acknowledged = await getPendingEvents(0, deviceId);
+        for (const event of acknowledged) {
+          if (event.device_seq <= seq) {
+            this.inFlightEvents.delete(event.event_id);
+          }
+        }
+      } catch (error) {
+        console.error('[Queue] Failed to clear in-flight events:', error);
+      }
     }
   }
 
@@ -245,11 +345,11 @@ export class EventQueue {
   /**
    * Reset queue (clear all acknowledgments)
    */
-  reset(): void {
+  async reset(): Promise<void> {
     this.lastAckDeviceSeq = 0;
-    this.deviceSeq = 0;
     this.saveLastAckDeviceSeq();
-    this.saveDeviceSeq();
+    this.inFlightEvents.clear();
+    await AtomicSequenceGenerator.reset();
   }
 
   /**
@@ -258,7 +358,7 @@ export class EventQueue {
   async clear(): Promise<void> {
     const { clearDatabase } = await import('./db');
     await clearDatabase();
-    this.reset();
+    await this.reset();
   }
 
   /**
@@ -317,9 +417,9 @@ export function getEventQueue(): EventQueue {
  * Call this when identity keypair changes (e.g., after pairing)
  * to ensure device_seq starts fresh with the new identity
  */
-export function resetEventQueue(): void {
+export async function resetEventQueue(): Promise<void> {
   if (queueInstance) {
-    queueInstance.reset();
+    await queueInstance.reset();
   }
   // Also clear localStorage directly in case queue wasn't instantiated
   if (typeof window !== 'undefined') {
@@ -327,6 +427,8 @@ export function resetEventQueue(): void {
     localStorage.removeItem(STORAGE_KEYS.LAST_ACK_SEQ);
     console.log('[Queue] Reset event queue and sequence counters for identity change');
   }
+  // Reset atomic sequence generator
+  await AtomicSequenceGenerator.reset();
   // Reset singleton so next getEventQueue() creates fresh instance
   queueInstance = null;
 }

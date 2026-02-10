@@ -11,6 +11,7 @@ import { WebVitalsReporter } from "@/components/web-vitals-reporter"
 import { UserProfileRestore } from "@/components/user-profile-restore"
 import { OnboardingGuard } from "@/components/onboarding/onboarding-guard"
 import { ToastContainer } from "@/components/ui/toast"
+import { StorageQuotaListener } from "@/components/storage-quota-listener"
 import "@/lib/utils/debug" // Enable browser console debugging
 import "./globals.css"
 
@@ -101,6 +102,7 @@ export default function RootLayout({
             <BackgroundSync />
             <WebVitalsReporter />
             <UserProfileRestore />
+            <StorageQuotaListener />
             <OnboardingGuard>
               {children}
             </OnboardingGuard>

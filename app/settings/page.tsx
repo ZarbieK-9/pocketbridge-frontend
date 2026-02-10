@@ -30,6 +30,9 @@ import { ValidationError } from "@/lib/utils/errors"
 import { downloadBackup, importData, checkDataIntegrity, clearAllData } from "@/lib/utils/data-persistence"
 import { clearUserProfile } from "@/lib/utils/user-profile"
 import { analytics } from "@/lib/utils/analytics"
+import { SyncStatus } from "@/components/sync-status"
+import { StorageQuotaMonitor } from "@/components/storage-quota-monitor"
+import { toast } from "sonner"
 
 export default function SettingsPage() {
   const { identityKeyPair, isInitialized } = useCrypto();
@@ -353,6 +356,55 @@ export default function SettingsPage() {
               <Label htmlFor="device-id">Device ID</Label>
               <Input id="device-id" value={deviceId} disabled className="font-mono text-sm" />
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Sync Status */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Sync Status</CardTitle>
+            <CardDescription>Monitor and control event synchronization</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <SyncStatus
+              showDetails={true}
+              refreshInterval={3000}
+              onSyncTrigger={() => {
+                toast.info('Syncing pending events...', { duration: 2000 });
+                analytics.track('manual_sync_triggered');
+              }}
+            />
+            <p className="mt-4 text-sm text-muted-foreground">
+              Events are automatically synced when online. Use "Sync Now" to force immediate synchronization of pending events.
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* Storage Quota */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Storage</CardTitle>
+            <CardDescription>Monitor local browser storage usage</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <StorageQuotaMonitor
+              showDetails={true}
+              onQuotaExceeded={(msg) => {
+                console.error('[Settings] Storage quota exceeded:', msg);
+                analytics.track('storage_quota_exceeded');
+              }}
+              onWarningLevelChange={(level) => {
+                if (level === 'critical') {
+                  toast.warning('Storage critically low!', {
+                    description: 'Consider syncing your data soon to free up space.',
+                  });
+                  analytics.track('storage_warning', { level });
+                }
+              }}
+            />
+            <p className="mt-4 text-sm text-muted-foreground">
+              Local storage is used to queue events when offline. Clear browser storage or sync data to free up space.
+            </p>
           </CardContent>
         </Card>
 

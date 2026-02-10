@@ -53,19 +53,20 @@ export class BackgroundClipboardSync {
     // Load last clipboard state
     await this.loadLastClipboard();
 
-    // Start monitoring clipboard changes (reduced frequency to avoid permission prompts)
-    // Only checks when page is focused
+    // Listen for copy/cut events for INSTANT sync (like messaging)
+    if (typeof document !== 'undefined') {
+      document.addEventListener('copy', this.handleCopyEvent);
+      document.addEventListener('cut', this.handleCopyEvent);
+      document.addEventListener('paste', this.handlePasteEvent);
+    }
+
+    // Fallback polling (reduced frequency) for cases where copy/cut events aren't captured
+    // e.g., context menu copy, keyboard shortcuts in some browsers
     this.monitorInterval = setInterval(() => {
       this.checkClipboard();
     }, CLIPBOARD_MONITOR_INTERVAL);
 
-    // Also listen for paste events to detect clipboard changes immediately
-    // This provides immediate sync without frequent polling
-    if (typeof document !== 'undefined') {
-      document.addEventListener('paste', this.handlePasteEvent);
-    }
-
-    console.log('[BackgroundClipboard] Started automatic monitoring');
+    console.log('[BackgroundClipboard] Started instant monitoring (event-driven + polling fallback)');
   }
 
   /**
@@ -77,12 +78,54 @@ export class BackgroundClipboardSync {
       this.monitorInterval = null;
     }
     if (typeof document !== 'undefined') {
+      document.removeEventListener('copy', this.handleCopyEvent);
+      document.removeEventListener('cut', this.handleCopyEvent);
       document.removeEventListener('paste', this.handlePasteEvent);
     }
     this.state.isMonitoring = false;
     this.saveState();
     console.log('[BackgroundClipboard] Stopped monitoring');
   }
+
+  /**
+   * Handle copy/cut events for INSTANT clipboard sync (like messaging)
+   */
+  private handleCopyEvent = async (event: ClipboardEvent): Promise<void> => {
+    if (!this.sessionKeys) return;
+
+    try {
+      // Get clipboard text immediately from the event
+      const clipboardData = event.clipboardData;
+      if (!clipboardData) {
+        // Fallback: read from clipboard API (small delay to let copy complete)
+        setTimeout(() => {
+          this.checkClipboard();
+        }, 50);
+        return;
+      }
+
+      const text = clipboardData.getData('text/plain');
+
+      // Only sync if text changed and is not empty
+      if (text && text !== this.state.lastClipboardText && text.length > 0) {
+        console.log('[BackgroundClipboard] Copy detected - syncing instantly...');
+
+        // Send to other devices IMMEDIATELY
+        await sendClipboardText(text);
+
+        // Update state
+        this.state.lastClipboardText = text;
+        this.state.lastSyncedAt = Date.now();
+        await this.saveState();
+      }
+    } catch (error) {
+      console.error('[BackgroundClipboard] Failed to handle copy event:', error);
+      // Fallback to polling-based check
+      setTimeout(() => {
+        this.checkClipboard();
+      }, 50);
+    }
+  };
 
   /**
    * Handle paste events to detect clipboard changes immediately

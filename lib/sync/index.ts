@@ -8,6 +8,7 @@ export {
   getDatabase,
   addEvent,
   getEventsByStream,
+  getEventsBySequenceRange,
   upsertDevice,
   getDevices,
   upsertStream,
@@ -15,6 +16,8 @@ export {
   clearDatabase,
 } from "./db"
 
-export { EventQueue, getEventQueue } from "./queue"
+export { EventQueue, getEventQueue, resetEventQueue } from "./queue"
 
 export { buildEvent, createEvent } from "./event-builder"
+
+export { AtomicSequenceGenerator } from "./atomic-sequence"

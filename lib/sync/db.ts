@@ -9,8 +9,16 @@
  * Indexes for efficient replay queries
  */
 
-import { DB_NAME, DB_VERSION, STORE_EVENTS, STORE_DEVICES, STORE_STREAMS } from '@/lib/constants';
+import { DB_NAME, DB_VERSION, STORE_EVENTS, STORE_DEVICES, STORE_STREAMS, STORE_FILE_CHUNKS } from '@/lib/constants';
 import type { EncryptedEvent, Device, Stream } from '@/types';
+
+export interface FileChunk {
+  id: string; // `${fileId}:${chunkIndex}`
+  fileId: string;
+  chunkIndex: number;
+  data: string; // base64 encoded chunk data
+  receivedAt: number;
+}
 
 /**
  * Initialize IndexedDB database with required object stores
@@ -53,6 +61,14 @@ export function initDatabase(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_STREAMS)) {
         const streamStore = db.createObjectStore(STORE_STREAMS, { keyPath: 'id' });
         streamStore.createIndex('type', 'type', { unique: false });
+      }
+
+      // File chunks store (for resumable file transfers)
+      if (!db.objectStoreNames.contains(STORE_FILE_CHUNKS)) {
+        const fileChunkStore = db.createObjectStore(STORE_FILE_CHUNKS, { keyPath: 'id' });
+        fileChunkStore.createIndex('fileId', 'fileId', { unique: false });
+        fileChunkStore.createIndex('chunkIndex', 'chunkIndex', { unique: false });
+        fileChunkStore.createIndex('receivedAt', 'receivedAt', { unique: false });
       }
     };
   });
@@ -159,6 +175,47 @@ export async function getPendingEvents(lastAckDeviceSeq: number, deviceId?: stri
     };
 
     request.onerror = () => reject(new Error('Failed to get pending events'));
+  });
+}
+
+/**
+ * Get events by device sequence range (for gap filling)
+ * Returns events from a specific device within the given sequence range
+ *
+ * @param deviceId - Device ID to filter events
+ * @param startSeq - Start of sequence range (inclusive)
+ * @param endSeq - End of sequence range (inclusive)
+ */
+export async function getEventsBySequenceRange(
+  deviceId: string,
+  startSeq: number,
+  endSeq: number
+): Promise<EncryptedEvent[]> {
+  const db = await getDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_EVENTS], 'readonly');
+    const store = transaction.objectStore(STORE_EVENTS);
+    const request = store.getAll();
+
+    request.onsuccess = () => {
+      const allEvents = request.result as EncryptedEvent[];
+
+      // Filter events by device and sequence range
+      const rangeEvents = allEvents.filter((event) => {
+        return (
+          event.device_id === deviceId &&
+          event.device_seq >= startSeq &&
+          event.device_seq <= endSeq
+        );
+      });
+
+      // Sort by device_seq
+      rangeEvents.sort((a, b) => a.device_seq - b.device_seq);
+      resolve(rangeEvents);
+    };
+
+    request.onerror = () => reject(new Error('Failed to get events by sequence range'));
   });
 }
 
@@ -272,11 +329,12 @@ export async function clearDatabase(): Promise<void> {
   const db = await getDatabase();
 
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction([STORE_EVENTS, STORE_DEVICES, STORE_STREAMS], 'readwrite');
+    const transaction = db.transaction([STORE_EVENTS, STORE_DEVICES, STORE_STREAMS, STORE_FILE_CHUNKS], 'readwrite');
 
     transaction.objectStore(STORE_EVENTS).clear();
     transaction.objectStore(STORE_DEVICES).clear();
     transaction.objectStore(STORE_STREAMS).clear();
+    transaction.objectStore(STORE_FILE_CHUNKS).clear();
 
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(new Error('Failed to clear database'));
@@ -355,5 +413,117 @@ export async function deleteAcknowledgedEvents(
 
     transaction.oncomplete = () => resolve(deletedCount);
     transaction.onerror = () => reject(new Error('Failed to delete acknowledged events'));
+  });
+}
+
+/**
+ * Save a file chunk to the database (for resumable file transfers)
+ */
+export async function saveFileChunk(chunk: FileChunk): Promise<void> {
+  const db = await getDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_FILE_CHUNKS], 'readwrite');
+    const store = transaction.objectStore(STORE_FILE_CHUNKS);
+    const request = store.put(chunk);
+
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(new Error('Failed to save file chunk'));
+  });
+}
+
+/**
+ * Get all chunks for a specific file
+ * Returns chunks sorted by chunkIndex
+ */
+export async function getFileChunks(fileId: string): Promise<FileChunk[]> {
+  const db = await getDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_FILE_CHUNKS], 'readonly');
+    const store = transaction.objectStore(STORE_FILE_CHUNKS);
+    const index = store.index('fileId');
+    const request = index.getAll(fileId);
+
+    request.onsuccess = () => {
+      const chunks = request.result as FileChunk[];
+      // Sort by chunkIndex
+      chunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
+      resolve(chunks);
+    };
+
+    request.onerror = () => reject(new Error('Failed to get file chunks'));
+  });
+}
+
+/**
+ * Get a specific chunk by ID
+ */
+export async function getFileChunkById(chunkId: string): Promise<FileChunk | null> {
+  const db = await getDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_FILE_CHUNKS], 'readonly');
+    const store = transaction.objectStore(STORE_FILE_CHUNKS);
+    const request = store.get(chunkId);
+
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(new Error('Failed to get file chunk'));
+  });
+}
+
+/**
+ * Delete all chunks for a specific file
+ * Used to clean up after successful transfer or to cancel transfer
+ */
+export async function deleteFileChunks(fileId: string): Promise<void> {
+  const db = await getDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_FILE_CHUNKS], 'readwrite');
+    const store = transaction.objectStore(STORE_FILE_CHUNKS);
+    const index = store.index('fileId');
+    const request = index.openCursor(IDBKeyRange.only(fileId));
+
+    request.onsuccess = (event) => {
+      const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+      if (cursor) {
+        cursor.delete();
+        cursor.continue();
+      }
+    };
+
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(new Error('Failed to delete file chunks'));
+  });
+}
+
+/**
+ * Get all file IDs that have stored chunks
+ * Useful for resuming interrupted transfers
+ */
+export async function getIncompleteFileIds(): Promise<string[]> {
+  const db = await getDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_FILE_CHUNKS], 'readonly');
+    const store = transaction.objectStore(STORE_FILE_CHUNKS);
+    const index = store.index('fileId');
+    const request = index.openKeyCursor();
+
+    const fileIds = new Set<string>();
+
+    request.onsuccess = (event) => {
+      const cursor = (event.target as IDBRequest<IDBCursor>).result;
+      if (cursor) {
+        const chunk = cursor.primaryKey as string;
+        const fileId = chunk.split(':')[0];
+        fileIds.add(fileId);
+        cursor.continue();
+      }
+    };
+
+    transaction.oncomplete = () => resolve(Array.from(fileIds));
+    transaction.onerror = () => reject(new Error('Failed to get incomplete file IDs'));
   });
 }

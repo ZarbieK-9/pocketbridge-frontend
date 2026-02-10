@@ -551,7 +551,7 @@ export class WebSocketClient {
   /**
    * Handle Session Established (Step 4 of handshake)
    */
-  private handleSessionEstablished(message: SessionEstablished): void {
+  private async handleSessionEstablished(message: SessionEstablished): Promise<void> {
     // Parse last_ack_device_seq as number (server may send as string)
     const lastAckSeq = typeof message.last_ack_device_seq === 'string'
       ? parseInt(message.last_ack_device_seq, 10)
@@ -567,8 +567,8 @@ export class WebSocketClient {
     // This prevents sending events with device_seq <= last_ack_device_seq
     // IMPORTANT: EventQueue is the single source of truth for lastAckDeviceSeq
     const queue = getEventQueue();
-    queue.setLastAckFromServer(lastAckSeq);
-    queue.acknowledge(this.deviceId, lastAckSeq);
+    await queue.setLastAckFromServer(lastAckSeq);
+    await queue.acknowledge(this.deviceId, lastAckSeq);
 
     // Clear handshake state (including clientAuthSent flag)
     this.handshakeState = {};
@@ -865,8 +865,51 @@ export class WebSocketClient {
     }
 
 
+    // Track failed sends to retry later
+    const failedEvents: EncryptedEvent[] = [];
+
     for (const event of validPending) {
-      await this.sendEvent(event);
+      try {
+        // Mark as in-flight to prevent duplicate sends during network flapping
+        queue.markInFlight(event.event_id);
+
+        await this.sendEvent(event);
+
+        // Note: Event stays in-flight until server acknowledges it
+        // The acknowledge() handler will clear it from in-flight set
+      } catch (error) {
+        logger.error('Failed to send pending event', {
+          eventId: event.event_id,
+          deviceSeq: event.device_seq,
+          error,
+        });
+
+        // Clear from in-flight on error so it can be retried
+        queue.clearInFlight(event.event_id);
+        failedEvents.push(event);
+
+        // Continue with next event instead of stopping (partial sync continuation)
+      }
+    }
+
+    if (failedEvents.length > 0) {
+      logger.warn(`Failed to sync ${failedEvents.length}/${validPending.length} events`, {
+        failedEventIds: failedEvents.map(e => e.event_id.substring(0, 8)),
+        inFlightCount: queue.getInFlightCount(),
+      });
+
+      // Retry failed events after delay (exponential backoff)
+      setTimeout(() => {
+        logger.info('Retrying failed events', { count: failedEvents.length });
+        this.syncPending().catch(err => {
+          logger.error('Retry syncPending failed', { error: err });
+        });
+      }, 5000); // 5 second delay before retry
+    } else if (validPending.length > 0) {
+      logger.info('All pending events sent successfully', {
+        count: validPending.length,
+        inFlightCount: queue.getInFlightCount(),
+      });
     }
   }
 
@@ -882,7 +925,7 @@ export class WebSocketClient {
           await this.handleServerHello(message.payload as ServerHello);
           break;
         case 'session_established':
-          this.handleSessionEstablished(message.payload as SessionEstablished);
+          await this.handleSessionEstablished(message.payload as SessionEstablished);
           break;
         case 'event':
           await this.handleIncomingEvent(message.payload as EncryptedEvent);
@@ -908,7 +951,7 @@ export class WebSocketClient {
           this.handleFullResyncRequired(message.payload as FullResyncRequired);
           break;
         case 'ack':
-          this.handleAck(message.payload as { device_seq: number });
+          await this.handleAck(message.payload as { device_seq: number });
           break;
         case 'pong':
           // Handle heartbeat pong - no action needed, just acknowledges ping
@@ -916,7 +959,7 @@ export class WebSocketClient {
           break;
         case 'pairing_completed':
           logger.info('[WS] Received pairing_completed message', { payload: message.payload });
-          this.handlePairingCompleted(message.payload as { success: boolean; linkedUserId?: string });
+          await this.handlePairingCompleted(message.payload as { success: boolean; linkedUserId?: string });
           break;
         case 'pairing_failed':
           this.handlePairingFailed(message.payload as { error: string });
@@ -934,7 +977,12 @@ export class WebSocketClient {
           this.handleError(new Error(`Server error: ${JSON.stringify(message.payload)}`));
           break;
         default:
-          logger.warn('Unknown message type', { type: message.type });
+          // Handle gap detection (missing_events_request) - future protocol extension
+          if ((message as any).type === 'missing_events_request') {
+            await this.handleMissingEventsRequest((message as any).payload as { startSeq: number; endSeq: number });
+          } else {
+            logger.warn('Unknown message type', { type: message.type });
+          }
       }
     } catch (error) {
       logger.error('Failed to parse message', error);
@@ -1005,10 +1053,10 @@ export class WebSocketClient {
    * Handle acknowledgment from server
    * Updates the queue's lastAckDeviceSeq (single source of truth)
    */
-  private handleAck(ack: { device_seq: number }): void {
+  private async handleAck(ack: { device_seq: number }): Promise<void> {
     // EventQueue is the single source of truth for lastAckDeviceSeq
     const queue = getEventQueue();
-    queue.acknowledge(this.deviceId, ack.device_seq);
+    await queue.acknowledge(this.deviceId, ack.device_seq);
   }
 
   /**
@@ -1286,7 +1334,7 @@ export class WebSocketClient {
   /**
    * Handle pairing completed message
    */
-  private handlePairingCompleted(message: { success: boolean; linkedUserId?: string }): void {
+  private async handlePairingCompleted(message: { success: boolean; linkedUserId?: string }): Promise<void> {
     if (message.success && message.linkedUserId) {
       logger.info('Pairing completed successfully', {
         linkedUserId: message.linkedUserId.substring(0, 16) + '...',
@@ -1302,7 +1350,7 @@ export class WebSocketClient {
       // so we must reset our local counters to prevent "Device sequence not monotonic" errors
       // EventQueue.reset() handles all state (it's the single source of truth)
       const queue = getEventQueue();
-      queue.reset();
+      await queue.reset();
       logger.info('Reset event queue after pairing', { linkedUserId: message.linkedUserId.substring(0, 16) + '...' });
 
       // Emit system message for UI updates
@@ -1332,6 +1380,82 @@ export class WebSocketClient {
     });
 
     this.handleError(new Error(`Pairing failed: ${message.error}`));
+  }
+
+  /**
+   * Handle missing events request from server (gap detection)
+   * Server detected a gap in sequence numbers and is requesting missing events
+   */
+  private async handleMissingEventsRequest(request: {
+    startSeq: number;
+    endSeq: number;
+  }): Promise<void> {
+    logger.warn('[GAP] Server detected sequence gap, requesting missing events', {
+      startSeq: request.startSeq,
+      endSeq: request.endSeq,
+      gap: request.endSeq - request.startSeq + 1,
+    });
+
+    try {
+      const { getEventsBySequenceRange } = await import('@/lib/sync');
+
+      // Get events in the requested range from local storage
+      const missingEvents = await getEventsBySequenceRange(
+        this.deviceId,
+        request.startSeq,
+        request.endSeq
+      );
+
+      if (missingEvents.length === 0) {
+        logger.error('[GAP] No events found in requested range - possible data loss', {
+          startSeq: request.startSeq,
+          endSeq: request.endSeq,
+        });
+        return;
+      }
+
+      logger.info('[GAP] Resending missing events to fill gap', {
+        count: missingEvents.length,
+        sequences: missingEvents.map(e => e.device_seq),
+      });
+
+      // Mark events as in-flight before resending
+      const queue = getEventQueue();
+      for (const event of missingEvents) {
+        queue.markInFlight(event.event_id);
+      }
+
+      // Resend each missing event
+      for (const event of missingEvents) {
+        try {
+          await this.sendEvent(event);
+          logger.debug('[GAP] Resent event', {
+            eventId: event.event_id.substring(0, 8),
+            deviceSeq: event.device_seq,
+          });
+        } catch (error) {
+          logger.error('[GAP] Failed to resend event', {
+            eventId: event.event_id,
+            deviceSeq: event.device_seq,
+            error,
+          });
+          // Clear from in-flight on error
+          queue.clearInFlight(event.event_id);
+        }
+      }
+
+      logger.info('[GAP] Finished resending missing events', {
+        requested: request.endSeq - request.startSeq + 1,
+        found: missingEvents.length,
+        sent: missingEvents.length,
+      });
+    } catch (error) {
+      logger.error('[GAP] Failed to handle missing events request', {
+        startSeq: request.startSeq,
+        endSeq: request.endSeq,
+        error,
+      });
+    }
   }
 
   /**

@@ -67,7 +67,7 @@ export async function buildEvent(
     event_id: generateUUIDv7(),
     user_id: userId || identityKeyPair.publicKeyHex,
     device_id: deviceId,
-    device_seq: queue.getNextSeq(),
+    device_seq: await queue.getNextSeq(), // Now async - atomic across tabs
     stream_id: streamId,
     stream_seq: 0, // Server will assign this
     type,

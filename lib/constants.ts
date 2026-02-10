@@ -13,31 +13,39 @@ export const HMAC_LENGTH = 32 // SHA-256
 // File constraints
 export const MAX_FILE_SIZE = 25 * 1024 * 1024 * 1024 // 25GB
 
-// Chunk size tiers for optimal speed based on file size
-// Larger chunks = less overhead (fewer encryption calls, fewer WebSocket messages)
-// FAST settings: maximum speed, uses more memory
+// Chunk size tiers - OPTIMIZED FOR REDIS/SERVER MEMORY
+// Small chunks = less Redis memory, more overhead
+// Large chunks = more Redis memory, less overhead
+// For files > 5GB, use WebRTC P2P instead to bypass server entirely!
 export const FILE_CHUNK_SIZE_SMALL = 8 * 1024 * 1024 // 8MB for files < 100MB
 export const FILE_CHUNK_SIZE_MEDIUM = 16 * 1024 * 1024 // 16MB for files 100MB - 1GB
-export const FILE_CHUNK_SIZE_LARGE = 32 * 1024 * 1024 // 32MB for files > 1GB (max speed)
+export const FILE_CHUNK_SIZE_LARGE = 12 * 1024 * 1024 // 12MB for files > 1GB (REDUCED to save Redis memory)
+export const FILE_CHUNK_SIZE_HUGE = 8 * 1024 * 1024 // 8MB for files > 10GB (SMALL chunks to prevent Redis overflow)
 
 // Default chunk size (for backward compatibility)
 export const FILE_CHUNK_SIZE = FILE_CHUNK_SIZE_SMALL
 
-// Parallel chunk uploads based on file size
-// FAST settings: maximum parallelism for speed
+// Parallel chunk uploads - REDUCED for large files to prevent Redis overflow
 export const FILE_PARALLEL_CHUNKS_SMALL = 12 // 12 parallel for small files (~96MB in flight)
-export const FILE_PARALLEL_CHUNKS_MEDIUM = 24 // 24 parallel for medium files (~384MB in flight)
-export const FILE_PARALLEL_CHUNKS_LARGE = 32 // 32 parallel for large files (~1GB in flight max)
+export const FILE_PARALLEL_CHUNKS_MEDIUM = 16 // 16 parallel for medium files (~256MB in flight)
+export const FILE_PARALLEL_CHUNKS_LARGE = 8 // 8 parallel for large files (~96MB in flight - REDUCED)
+export const FILE_PARALLEL_CHUNKS_HUGE = 4 // 4 parallel for huge files (~32MB in flight - MINIMAL to prevent Redis overflow)
 
 // Default parallel chunks (for backward compatibility)
 export const FILE_PARALLEL_CHUNKS = FILE_PARALLEL_CHUNKS_SMALL
 
+// File size thresholds
+export const WEBRTC_THRESHOLD = 5 * 1024 * 1024 * 1024 // 5GB - use WebRTC P2P for files larger than this
+export const LARGE_FILE_THRESHOLD = 10 * 1024 * 1024 * 1024 // 10GB - use minimal parallelism
+
 /**
  * Get optimal chunk size based on file size
- * Larger files use larger chunks to reduce overhead
+ * REDUCED chunk sizes for large files to prevent Redis memory overflow
  */
 export function getOptimalChunkSize(fileSize: number): number {
-  if (fileSize > 1024 * 1024 * 1024) { // > 1GB
+  if (fileSize > LARGE_FILE_THRESHOLD) { // > 10GB
+    return FILE_CHUNK_SIZE_HUGE // Small chunks to save Redis
+  } else if (fileSize > 1024 * 1024 * 1024) { // > 1GB
     return FILE_CHUNK_SIZE_LARGE
   } else if (fileSize > 100 * 1024 * 1024) { // > 100MB
     return FILE_CHUNK_SIZE_MEDIUM
@@ -47,15 +55,25 @@ export function getOptimalChunkSize(fileSize: number): number {
 
 /**
  * Get optimal parallel chunk count based on file size
- * Larger files benefit from more parallelism
+ * REDUCED parallelism for large files to prevent Redis overflow
  */
 export function getOptimalParallelChunks(fileSize: number): number {
-  if (fileSize > 1024 * 1024 * 1024) { // > 1GB
+  if (fileSize > LARGE_FILE_THRESHOLD) { // > 10GB
+    return FILE_PARALLEL_CHUNKS_HUGE // Minimal parallelism
+  } else if (fileSize > 1024 * 1024 * 1024) { // > 1GB
     return FILE_PARALLEL_CHUNKS_LARGE
   } else if (fileSize > 100 * 1024 * 1024) { // > 100MB
     return FILE_PARALLEL_CHUNKS_MEDIUM
   }
   return FILE_PARALLEL_CHUNKS_SMALL
+}
+
+/**
+ * Check if file should use WebRTC P2P transfer (bypass server)
+ * Returns true for files > 5GB to prevent Redis overflow
+ */
+export function shouldUseWebRTC(fileSize: number): boolean {
+  return fileSize > WEBRTC_THRESHOLD
 }
 
 // WebSocket configuration
@@ -77,7 +95,8 @@ export const STORAGE_KEYS = {
 
 // IndexedDB configuration
 export const DB_NAME = "pocketbridge_db"
-export const DB_VERSION = 1
+export const DB_VERSION = 2 // Bumped for file_chunks store
 export const STORE_EVENTS = "events"
 export const STORE_DEVICES = "devices"
 export const STORE_STREAMS = "streams"
+export const STORE_FILE_CHUNKS = "file_chunks" // For resumable file transfers

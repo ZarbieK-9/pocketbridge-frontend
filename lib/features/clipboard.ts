@@ -144,12 +144,18 @@ export class ClipboardMonitor {
   private onClipboardChange?: (text: string) => void;
 
   /**
-   * Start monitoring clipboard
+   * Start monitoring clipboard with instant detection
    */
   start(onChange?: (text: string) => void): void {
     this.onClipboardChange = onChange;
-    
-    // Poll clipboard every 500ms
+
+    // Listen for copy/cut events for INSTANT sync
+    if (typeof document !== 'undefined') {
+      document.addEventListener('copy', this.handleCopyEvent);
+      document.addEventListener('cut', this.handleCopyEvent);
+    }
+
+    // Fallback polling every 500ms for cases where events aren't captured
     this.intervalId = setInterval(async () => {
       try {
         await this.checkClipboard();
@@ -179,7 +185,44 @@ export class ClipboardMonitor {
       clearInterval(this.intervalId);
       this.intervalId = null;
     }
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('copy', this.handleCopyEvent);
+      document.removeEventListener('cut', this.handleCopyEvent);
+    }
   }
+
+  /**
+   * Handle copy/cut events for instant detection
+   */
+  private handleCopyEvent = async (event: ClipboardEvent): Promise<void> => {
+    try {
+      // Get clipboard text immediately from the event
+      const clipboardData = event.clipboardData;
+      if (!clipboardData) {
+        // Fallback: check clipboard after a small delay
+        setTimeout(() => this.checkClipboard(), 50);
+        return;
+      }
+
+      const text = clipboardData.getData('text/plain');
+
+      if (text !== this.lastClipboardText && text.length > 0) {
+        this.lastClipboardText = text;
+
+        // Send to other devices INSTANTLY
+        await sendClipboardText(text);
+
+        // Notify handler
+        if (this.onClipboardChange) {
+          this.onClipboardChange(text);
+        }
+      }
+    } catch (error) {
+      console.error('[Clipboard] Failed to handle copy event:', error);
+      // Fallback to polling
+      setTimeout(() => this.checkClipboard(), 50);
+    }
+  };
 
   /**
    * Check clipboard for changes
