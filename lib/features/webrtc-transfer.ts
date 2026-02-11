@@ -23,7 +23,7 @@ import type { EncryptedEvent } from '@/types';
 
 const WEBRTC_STREAM_ID = 'webrtc:signaling';
 const CHUNK_SIZE = 64 * 1024; // 64KB chunks for WebRTC data channel
-const MAX_BUFFER_SIZE = 16 * 1024 * 1024; // 16MB buffer before backpressure
+const MAX_BUFFER_SIZE = 256 * 1024; // 256KB buffer before backpressure (well below browser's ~16MB hard limit)
 const CONNECTION_TIMEOUT_MS = 30_000; // 30s to establish connection
 
 export interface WebRTCFileTransfer {
@@ -236,6 +236,8 @@ export async function sendFileViaWebRTC(
 
 /**
  * Transfer file through data channel
+ * Uses bufferedAmountLowThreshold event for proper backpressure
+ * instead of polling, which prevents send queue overflow.
  */
 async function transferFile(
   file: File,
@@ -245,73 +247,85 @@ async function transferFile(
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let offset = 0;
+    let paused = false;
+
+    // Use the browser's built-in backpressure event
+    dataChannel.bufferedAmountLowThreshold = MAX_BUFFER_SIZE / 2;
+
+    dataChannel.onbufferedamountlow = () => {
+      if (paused) {
+        paused = false;
+        sendChunk();
+      }
+    };
 
     const sendChunk = () => {
-      // Backpressure: wait for buffer to drain
-      if (dataChannel.bufferedAmount > MAX_BUFFER_SIZE) {
-        setTimeout(sendChunk, 50);
-        return;
-      }
+      while (offset < file.size) {
+        // Backpressure: pause and wait for onbufferedamountlow event
+        if (dataChannel.bufferedAmount > MAX_BUFFER_SIZE) {
+          paused = true;
+          return; // onbufferedamountlow will resume
+        }
 
-      if (offset >= file.size) {
-        // All chunks fed to buffer — wait for buffer to drain before sending EOF
-        // This ensures all data has actually left the sender before marking complete
-        const waitForDrain = () => {
-          if (dataChannel.bufferedAmount > 0) {
-            // Update progress to show "flushing" state
-            transfer.progress = 99;
-            emitTransferEvent('progress', transfer);
-            setTimeout(waitForDrain, 100);
-            return;
-          }
-
+        const end = Math.min(offset + CHUNK_SIZE, file.size);
+        // Read chunk synchronously from the File slice
+        // We need to go async for arrayBuffer(), so break the loop
+        const chunk = file.slice(offset, end);
+        chunk.arrayBuffer().then((data) => {
           try {
-            dataChannel.send(new TextEncoder().encode('__EOF__'));
-            transfer.status = 'complete';
-            transfer.progress = 100;
-            const duration = (Date.now() - transfer.startTime) / 1000;
-            transfer.speed = file.size / duration;
-            console.log(`[WebRTC] Transfer complete: ${file.name} (${(transfer.speed / 1024 / 1024).toFixed(2)} MB/s)`);
-            emitTransferEvent('complete', transfer);
-            if (onProgress) onProgress(100);
-            resolve();
-          } catch (err) {
-            reject(err);
+            dataChannel.send(data);
+            offset += data.byteLength;
+            transfer.bytesTransferred = offset;
+            transfer.progress = Math.round((offset / file.size) * 100);
+
+            const elapsed = (Date.now() - transfer.startTime) / 1000;
+            transfer.speed = elapsed > 0 ? offset / elapsed : 0;
+
+            if (onProgress) onProgress(transfer.progress);
+            emitTransferEvent('progress', transfer);
+
+            // Continue sending (next iteration will check buffer)
+            sendChunk();
+          } catch (error) {
+            transfer.status = 'failed';
+            emitTransferEvent('failed', transfer);
+            reject(error);
           }
-        };
-
-        waitForDrain();
-        return;
-      }
-
-      const end = Math.min(offset + CHUNK_SIZE, file.size);
-      const chunk = file.slice(offset, end);
-
-      chunk.arrayBuffer().then((data) => {
-        try {
-          dataChannel.send(data);
-          offset += data.byteLength;
-          transfer.bytesTransferred = offset;
-          transfer.progress = Math.round((offset / file.size) * 100);
-
-          const elapsed = (Date.now() - transfer.startTime) / 1000;
-          transfer.speed = elapsed > 0 ? offset / elapsed : 0;
-
-          if (onProgress) onProgress(transfer.progress);
-          emitTransferEvent('progress', transfer);
-
-          // Use setTimeout to avoid blocking the main thread
-          setTimeout(sendChunk, 0);
-        } catch (error) {
+        }).catch((err) => {
           transfer.status = 'failed';
           emitTransferEvent('failed', transfer);
-          reject(error);
+          reject(err);
+        });
+
+        // Exit the while loop — the .then() callback will continue
+        return;
+      }
+
+      // All chunks fed to buffer — wait for buffer to drain before sending EOF
+      const waitForDrain = () => {
+        if (dataChannel.bufferedAmount > 0) {
+          transfer.progress = 99;
+          emitTransferEvent('progress', transfer);
+          setTimeout(waitForDrain, 100);
+          return;
         }
-      }).catch((err) => {
-        transfer.status = 'failed';
-        emitTransferEvent('failed', transfer);
-        reject(err);
-      });
+
+        try {
+          dataChannel.send(new TextEncoder().encode('__EOF__'));
+          transfer.status = 'complete';
+          transfer.progress = 100;
+          const duration = (Date.now() - transfer.startTime) / 1000;
+          transfer.speed = file.size / duration;
+          console.log(`[WebRTC] Transfer complete: ${file.name} (${(transfer.speed / 1024 / 1024).toFixed(2)} MB/s)`);
+          emitTransferEvent('complete', transfer);
+          if (onProgress) onProgress(100);
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      };
+
+      waitForDrain();
     };
 
     sendChunk();
