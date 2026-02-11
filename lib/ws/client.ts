@@ -600,11 +600,11 @@ export class WebSocketClient {
       !!sessionStorage.getItem('pending_pairing_code');
 
     if (!hasPendingPairing) {
-      // Request replay if needed
+      // Always request replay on reconnect to ensure no missed events
+      // This is important for offline scenario: even with lastAck=0, there may be queued events
       const lastAck = queue.getLastAckDeviceSeq();
-      if (lastAck > 0) {
-        this.requestReplay();
-      }
+      logger.info('[HANDSHAKE] Requesting replay', { lastAck });
+      this.requestReplay();
 
       // Sync pending events from offline queue
       this.syncPending();
