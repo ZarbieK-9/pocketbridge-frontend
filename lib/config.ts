@@ -90,7 +90,7 @@ function getDefaultWsUrl(): string {
   }
   
   // Development default
-  return 'wss://pocketbridge.duckdns.org/ws';
+  return 'wss://terraqueous-nonmarketable-burt.ngrok-free.dev/ws';
 }
 
 /**
@@ -101,7 +101,7 @@ function getDefaultApiUrl(): string {
   if (nodeEnv === 'production') {
     return 'https://backend-production-7f7ab.up.railway.app';
   }
-  return 'https://pocketbridge.duckdns.org';
+  return 'https://terraqueous-nonmarketable-burt.ngrok-free.dev';
 }
 
 /**

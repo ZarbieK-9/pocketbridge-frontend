@@ -16,8 +16,9 @@ import {
   startTracking,
   storeChunk,
   getChunks,
-  deleteTransfer,
+  deleteTransferChunks,
   getTransferProgress,
+  getTransfer,
 } from '@/lib/features/file-transfer-tracker';
 import type { EncryptedEvent } from '@/types';
 
@@ -47,6 +48,10 @@ const activeTransfers = new Map<string, WebRTCFileTransfer>();
 
 // ICE candidate queue — candidates that arrive before setRemoteDescription
 const pendingICECandidates = new Map<string, RTCIceCandidateInit[]>();
+
+// ICE candidates that arrive before the transfer/peer connection exists at all
+// (e.g. ICE candidate event processed while offer handler is still async)
+const earlyICECandidates = new Map<string, RTCIceCandidateInit[]>();
 
 // Event listeners for UI integration
 type TransferEventType = 'progress' | 'incoming' | 'complete' | 'failed';
@@ -349,6 +354,13 @@ export async function handleWebRTCOffer(
     return;
   }
 
+  // Guard against replayed offers — skip if transfer already exists in IndexedDB
+  const existingRecord = await getTransfer(fileId);
+  if (existingRecord) {
+    console.log('[WebRTC] Skipping offer — transfer already tracked', { fileId, status: existingRecord.status });
+    return;
+  }
+
   const deviceId = getOrCreateDeviceId();
 
   const transfer: WebRTCFileTransfer = {
@@ -404,15 +416,12 @@ export async function handleWebRTCOffer(
       if (bytes.length <= 7) {
         const text = new TextDecoder().decode(bytes);
         if (text === '__EOF__') {
-          // Transfer complete — reassemble from IndexedDB and download
-          transfer.status = 'complete';
-          transfer.progress = 100;
-          const duration = (Date.now() - transfer.startTime) / 1000;
-          transfer.speed = metadata.fileSize / duration;
-          console.log(`[WebRTC] Received file: ${metadata.fileName} (${(transfer.speed / 1024 / 1024).toFixed(2)} MB/s)`);
-          emitTransferEvent('complete', transfer);
+          // All data received — reassemble from IndexedDB before marking complete
+          // Show 99% while assembling so user knows it's not stuck
+          transfer.progress = 99;
+          emitTransferEvent('progress', transfer);
 
-          // Reassemble from IndexedDB
+          // Reassemble from IndexedDB and trigger download
           try {
             const storedChunks = await getChunks(fileId);
             const sorted = storedChunks.sort((a, b) => a.chunkIndex - b.chunkIndex);
@@ -420,8 +429,17 @@ export async function handleWebRTCOffer(
             const blob = new Blob(blobParts, { type: metadata.mimeType || 'application/octet-stream' });
             downloadFile(blob, metadata.fileName);
 
-            // Clean up
-            await deleteTransfer(fileId);
+            // NOW mark as complete — download has been triggered
+            transfer.status = 'complete';
+            transfer.progress = 100;
+            const duration = (Date.now() - transfer.startTime) / 1000;
+            transfer.speed = metadata.fileSize / duration;
+            console.log(`[WebRTC] Received file: ${metadata.fileName} (${(transfer.speed / 1024 / 1024).toFixed(2)} MB/s)`);
+            emitTransferEvent('complete', transfer);
+
+            // Delete chunks to free space but keep transfer record as 'complete'
+            // so replayed events on refresh won't restart the transfer
+            await deleteTransferChunks(fileId);
           } catch (err) {
             console.error('[WebRTC] Failed to reassemble file:', err);
             transfer.status = 'failed';
@@ -485,6 +503,16 @@ export async function handleWebRTCOffer(
     sdp: answer.sdp!,
   });
 
+  // Flush any ICE candidates that arrived before the offer was fully processed
+  const earlyQueued = earlyICECandidates.get(fileId);
+  if (earlyQueued && earlyQueued.length > 0) {
+    console.log(`[WebRTC] Flushing ${earlyQueued.length} early ICE candidates for ${fileId}`);
+    for (const c of earlyQueued) {
+      await peerConnection.addIceCandidate(new RTCIceCandidate(c));
+    }
+    earlyICECandidates.delete(fileId);
+  }
+
   console.log('[WebRTC] Answer sent, waiting for data channel...');
 }
 
@@ -519,6 +547,16 @@ export async function handleWebRTCAnswer(
     }
     pendingICECandidates.delete(fileId);
   }
+
+  // Also flush any early ICE candidates that arrived before the transfer existed
+  const earlyQueued = earlyICECandidates.get(fileId);
+  if (earlyQueued && earlyQueued.length > 0) {
+    console.log(`[WebRTC] Flushing ${earlyQueued.length} early ICE candidates for ${fileId}`);
+    for (const c of earlyQueued) {
+      await transfer.peerConnection.addIceCandidate(new RTCIceCandidate(c));
+    }
+    earlyICECandidates.delete(fileId);
+  }
 }
 
 /**
@@ -530,7 +568,12 @@ export async function handleICECandidate(
 ): Promise<void> {
   const transfer = activeTransfers.get(fileId);
   if (!transfer?.peerConnection) {
-    console.error('[WebRTC] No active transfer found for ICE candidate');
+    // Buffer early ICE candidates — the offer handler may still be processing
+    if (!earlyICECandidates.has(fileId)) {
+      earlyICECandidates.set(fileId, []);
+    }
+    earlyICECandidates.get(fileId)!.push(candidate);
+    console.log(`[WebRTC] Buffered early ICE candidate for ${fileId} (transfer not ready yet)`);
     return;
   }
 
@@ -608,5 +651,6 @@ export function cancelTransfer(fileId: string): void {
     emitTransferEvent('failed', transfer);
     activeTransfers.delete(fileId);
     pendingICECandidates.delete(fileId);
+    earlyICECandidates.delete(fileId);
   }
 }

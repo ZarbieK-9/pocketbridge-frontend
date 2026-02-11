@@ -26,7 +26,8 @@ export interface FileTransferRecord {
   totalChunks: number;
   encryptionKey: string;
   receivedChunks: number;
-  status: 'receiving' | 'complete' | 'stale';
+  status: 'receiving' | 'complete' | 'stale' | 'failed';
+  failReason?: string;
   createdAt: number;
   updatedAt: number;
   sourceDeviceId: string;
@@ -270,6 +271,85 @@ export async function getReceivingTransfers(): Promise<FileTransferRecord[]> {
 }
 
 /**
+ * Get all failed transfers
+ */
+export async function getFailedTransfers(): Promise<FileTransferRecord[]> {
+  const db = await openDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TRANSFERS_STORE, 'readonly');
+    const store = tx.objectStore(TRANSFERS_STORE);
+    const index = store.index('status');
+    const request = index.getAll('failed');
+
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Mark a transfer as failed with a reason
+ */
+export async function markTransferFailed(fileId: string, reason: string): Promise<void> {
+  const db = await openDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(TRANSFERS_STORE, 'readwrite');
+    const store = tx.objectStore(TRANSFERS_STORE);
+    const getRequest = store.get(fileId);
+
+    getRequest.onsuccess = () => {
+      const transfer = getRequest.result as FileTransferRecord | null;
+      if (!transfer || transfer.status === 'complete') {
+        resolve();
+        return;
+      }
+
+      transfer.status = 'failed';
+      transfer.failReason = reason;
+      transfer.updatedAt = Date.now();
+
+      const putRequest = store.put(transfer);
+      putRequest.onsuccess = () => {
+        logger.info('[FileTransferTracker] Transfer marked as failed', { fileId, reason });
+        resolve();
+      };
+      putRequest.onerror = () => reject(putRequest.error);
+    };
+    getRequest.onerror = () => reject(getRequest.error);
+  });
+}
+
+/**
+ * Delete only the chunks for a transfer (to free space) but keep the transfer record.
+ * Used after successful completion so replay/refresh can detect the file was already handled.
+ */
+export async function deleteTransferChunks(fileId: string): Promise<void> {
+  const db = await openDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(CHUNKS_STORE, 'readwrite');
+    const chunksStore = tx.objectStore(CHUNKS_STORE);
+    const chunksIndex = chunksStore.index('fileId');
+    const request = chunksIndex.openCursor(fileId);
+
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (cursor) {
+        chunksStore.delete(cursor.primaryKey);
+        cursor.continue();
+      }
+    };
+
+    tx.oncomplete = () => {
+      logger.debug('[FileTransferTracker] Deleted chunks (kept record)', { fileId });
+      resolve();
+    };
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
  * Delete a transfer and all its chunks
  */
 export async function deleteTransfer(fileId: string): Promise<void> {
@@ -326,7 +406,7 @@ export async function cleanupStaleTransfers(): Promise<number> {
 
         // Check if transfer is stale (old and incomplete)
         if (transfer.status === 'receiving' && transfer.updatedAt < threshold) {
-          logger.info('[FileTransferTracker] Cleaning up stale transfer', {
+          logger.info('[FileTransferTracker] Marking stale transfer as failed', {
             fileId: transfer.fileId,
             name: transfer.name,
             receivedChunks: transfer.receivedChunks,
@@ -334,19 +414,11 @@ export async function cleanupStaleTransfers(): Promise<number> {
             ageMinutes: Math.round((Date.now() - transfer.updatedAt) / 60000),
           });
 
-          // Delete the transfer record
-          transfersStore.delete(cursor.primaryKey);
-
-          // Delete associated chunks
-          const chunksIndex = chunksStore.index('fileId');
-          const chunksRequest = chunksIndex.openCursor(transfer.fileId);
-          chunksRequest.onsuccess = () => {
-            const chunkCursor = chunksRequest.result;
-            if (chunkCursor) {
-              chunksStore.delete(chunkCursor.primaryKey);
-              chunkCursor.continue();
-            }
-          };
+          // Mark as failed instead of silently deleting
+          transfer.status = 'failed';
+          transfer.failReason = 'Transfer timed out';
+          transfer.updatedAt = Date.now();
+          transfersStore.put(transfer);
 
           cleanedCount++;
         }

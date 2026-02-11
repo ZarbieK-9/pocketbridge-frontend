@@ -19,7 +19,7 @@ import { ValidationError } from '@/lib/utils/errors';
 const TEST_WS_URL =
   process.env.POCKETBRIDGE_TEST_WS_URL ||
   process.env.NEXT_PUBLIC_WS_URL ||
-  'ws://pocketbridge.duckdns.org/ws';
+  'wss://terraqueous-nonmarketable-burt.ngrok-free.dev/ws';
 
 describe('Validation Utilities', () => {
   describe('validateDeviceName', () => {

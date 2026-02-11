@@ -14,11 +14,11 @@ export interface Device {
   isOnline: boolean;
 }
 
-// Stream represents a feature workspace (clipboard, scratchpad, messages, files)
+// Stream represents a feature workspace (scratchpad, messages, files)
 export interface Stream {
   id: string;
   name: string;
-  type: 'clipboard' | 'scratchpad' | 'messages' | 'files';
+  type: 'scratchpad' | 'messages' | 'files';
   deviceIds: string[]; // Devices subscribed to this stream
   lastEventSeq: number;
 }
@@ -35,7 +35,7 @@ export interface EncryptedEvent {
   device_seq: number; // Monotonic sequence per device (starts at 1)
   stream_id: string; // Feature-specific stream identifier
   stream_seq: number; // Server-assigned sequence per stream (monotonic)
-  type: string; // Event type (e.g., "clipboard:update", "scratchpad:op")
+  type: string; // Event type (e.g., "scratchpad:op", "message:text")
   encrypted_payload: string; // Base64-encoded AES-GCM ciphertext
   ttl?: number; // Optional TTL (Unix timestamp)
   created_at?: number; // Server-assigned timestamp (metadata only)
@@ -43,8 +43,6 @@ export interface EncryptedEvent {
 
 // Event types for different features
 export type EventType =
-  | 'clipboard:text'
-  | 'clipboard:update'
   | 'scratchpad:op'
   | 'scratchpad:update'
   | 'message:text'
@@ -62,11 +60,6 @@ export type EventType =
   | 'webrtc:signal';
 
 // Decrypted event payload types
-export interface ClipboardTextPayload {
-  text: string;
-  source?: string; // App/context where copied
-}
-
 export interface ScratchpadOpPayload {
   // CRDT operation (type depends on CRDT chosen)
   op: string; // JSON stringified CRDT operation
@@ -150,7 +143,6 @@ export interface FileResumeRequestPayload {
 
 // Union type for all payloads
 export type EventPayload =
-  | ClipboardTextPayload
   | ScratchpadOpPayload
   | ScratchpadUpdatePayload
   | ScratchpadBatchPayload

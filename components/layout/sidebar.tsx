@@ -7,7 +7,7 @@
 import Link from "next/link"
 import { useEffect, useState } from "react"
 import { usePathname } from "next/navigation"
-import { Clipboard, FileText, MessageSquare, FolderOpen, Settings, LayoutDashboard, KeyRound } from "lucide-react"
+import { FileText, MessageSquare, FolderOpen, Settings, LayoutDashboard, KeyRound } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { StatusBadge } from "@/components/ui/status-badge"
 import { useWebSocket } from "@/hooks/use-websocket"
@@ -36,7 +36,6 @@ function getBackendApiUrlFromWs(wsUrl: string): string {
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/clipboard", label: "Clipboard", icon: Clipboard },
   { href: "/scratchpad", label: "Scratchpad", icon: FileText },
   { href: "/messages", label: "Secret Chat", icon: MessageSquare },
   { href: "/files", label: "Files", icon: FolderOpen },

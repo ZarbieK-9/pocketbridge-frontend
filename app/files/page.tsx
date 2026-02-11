@@ -10,7 +10,7 @@
  * - Resume support
  */
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { useCrypto } from '@/hooks/use-crypto';
 import { getWebSocketClient } from '@/lib/ws';
@@ -31,6 +31,9 @@ import {
   getOrphanedChunkEvents,
   clearOrphanedChunkEvents,
   getTransferProgress,
+  markTransferFailed,
+  getFailedTransfers,
+  deleteTransferChunks,
 } from '@/lib/features/file-transfer-tracker';
 import {
   startUploadTracking,
@@ -42,6 +45,9 @@ import {
   deleteUpload,
   getUploadProgress,
   cleanupStaleUploads,
+  markUploadFailed,
+  getIncompleteUploads,
+  getFailedUploads,
 } from '@/lib/features/file-upload-tracker';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { checkRateLimit } from '@/lib/utils/rate-limit';
@@ -77,12 +83,14 @@ interface FileTransfer {
   direction: 'sending' | 'receiving';
   startTime?: number; // Timestamp when transfer started
   speed?: number; // Current speed in bytes/second
+  failReason?: string; // Reason for failure
+  sourceDeviceId?: string; // Device that sent this file (for offline detection)
 }
 
 export default function FilesPage() {
   const deviceId = getOrCreateDeviceId();
   const { isInitialized: cryptoInitialized, identityKeyPair } = useCrypto();
-  const { isConnected, sessionKeys, lastEvent } = useWebSocket({
+  const { isConnected, sessionKeys, lastEvent, lastSystemMessage } = useWebSocket({
     url: WS_URL,
     deviceId,
     autoConnect: cryptoInitialized,
@@ -102,6 +110,46 @@ export default function FilesPage() {
   // Track processed fileIds to avoid duplicate downloads
   const processedFilesRef = useRef<Set<string>>(new Set());
 
+  // Chunk-arrival timeout: if no new chunk arrives for 60 seconds, mark transfer as failed
+  const chunkTimeoutTimers = useRef<Map<string, NodeJS.Timeout>>(new Map());
+
+  const resetChunkTimeout = useCallback((fileId: string) => {
+    // Clear existing timer
+    const existing = chunkTimeoutTimers.current.get(fileId);
+    if (existing) clearTimeout(existing);
+
+    // Set new 60-second timer
+    const timer = setTimeout(async () => {
+      const transfer = await getTransfer(fileId);
+      if (transfer && transfer.status === 'receiving') {
+        logger.info('[FileTransfer] Chunk timeout — no data received for 60s', { fileId });
+        await markTransferFailed(fileId, 'Transfer timed out — no data received');
+        // Move from active transfers to file history
+        setTransfers(prev => {
+          const failedTransfer = prev.find(t => t.fileId === fileId && t.status === 'uploading');
+          if (failedTransfer) {
+            setFileHistory(h => [{
+              eventId: `failed-${fileId}`,
+              deviceId: failedTransfer.sourceDeviceId || transfer.sourceDeviceId,
+              fileId,
+              name: transfer.name,
+              size: transfer.size,
+              mimeType: transfer.mimeType,
+              createdAt: new Date(),
+              status: 'failed' as const,
+              failReason: 'Transfer timed out',
+            }, ...h]);
+          }
+          return prev.filter(t => t.fileId !== fileId);
+        });
+        toast(`Transfer timed out — sender may have disconnected`, 'error');
+      }
+      chunkTimeoutTimers.current.delete(fileId);
+    }, 60_000);
+
+    chunkTimeoutTimers.current.set(fileId, timer);
+  }, []);
+
   // Cleanup stale transfers and load incomplete transfers on mount
   useEffect(() => {
     async function initTransferTracker() {
@@ -113,7 +161,7 @@ export default function FilesPage() {
           logger.info('Cleaned up stale transfers', { cleanedReceives, cleanedUploads });
         }
 
-        // Load any incomplete transfers to show in UI
+        // Load any incomplete receiving transfers to show in UI
         const incompleteTransfers = await getReceivingTransfers();
         if (incompleteTransfers.length > 0) {
           logger.info('Resuming incomplete transfers', { count: incompleteTransfers.length });
@@ -123,10 +171,25 @@ export default function FilesPage() {
             size: t.size,
             progress: getTransferProgress(t),
             status: 'uploading' as const,
-            direction: 'receiving' as const, // Resumed transfers are always receives
+            direction: 'receiving' as const,
+            sourceDeviceId: t.sourceDeviceId,
           }));
           setTransfers((prev) => [...prev, ...resumedTransfers]);
+
+          // Start chunk timeouts for resumed transfers — if sender is gone,
+          // these will fail after 60s instead of sitting forever
+          for (const t of incompleteTransfers) {
+            resetChunkTimeout(t.fileId);
+          }
         }
+
+        // Mark incomplete uploads as failed (sender side) — after page refresh
+        // the original File reference is gone so we can't resume
+        const incompleteUploads = await getIncompleteUploads();
+        for (const upload of incompleteUploads) {
+          await markUploadFailed(upload.fileId, 'Upload interrupted — page was refreshed');
+        }
+
       } catch (error) {
         logger.error('Failed to initialize transfer tracker', error);
       }
@@ -135,7 +198,8 @@ export default function FilesPage() {
     if (cryptoInitialized) {
       initTransferTracker();
     }
-  }, [cryptoInitialized]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cryptoInitialized, resetChunkTimeout]);
 
   // Send resume requests when WebSocket connects and there are incomplete transfers
   useEffect(() => {
@@ -179,7 +243,7 @@ export default function FilesPage() {
     }
   }, [isConnected, cryptoInitialized]);
 
-  // Fetch file history on mount
+  // Fetch file history on mount (includes failed transfers from IndexedDB)
   useEffect(() => {
     async function loadHistory() {
       if (!identityKeyPair?.publicKeyHex) return;
@@ -187,7 +251,40 @@ export default function FilesPage() {
       setHistoryLoading(true);
       try {
         const { files } = await fetchFileHistory(identityKeyPair.publicKeyHex);
-        setFileHistory(files);
+
+        // Load failed receiving transfers from IndexedDB
+        const failedTransfers = await getFailedTransfers();
+        const failedReceiveItems: FileHistoryItem[] = failedTransfers.map((t) => ({
+          eventId: `failed-recv-${t.fileId}`,
+          deviceId: t.sourceDeviceId,
+          fileId: t.fileId,
+          name: t.name,
+          size: t.size,
+          mimeType: t.mimeType,
+          createdAt: new Date(t.updatedAt),
+          status: 'failed' as const,
+          failReason: t.failReason || 'Transfer failed',
+        }));
+
+        // Load failed uploads (sender side) from IndexedDB
+        const failedUploads = await getFailedUploads();
+        const failedUploadItems: FileHistoryItem[] = failedUploads.map((u) => ({
+          eventId: `failed-send-${u.fileId}`,
+          deviceId: deviceId,
+          fileId: u.fileId,
+          name: u.name,
+          size: u.size,
+          mimeType: u.mimeType,
+          createdAt: new Date(u.updatedAt),
+          status: 'failed' as const,
+          failReason: u.failReason || 'Upload failed',
+        }));
+
+        // Merge and sort by date (newest first)
+        const allHistory = [...files, ...failedReceiveItems, ...failedUploadItems].sort(
+          (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+        );
+        setFileHistory(allHistory);
       } catch (error) {
         logger.error('Failed to load file history', error);
       } finally {
@@ -344,6 +441,52 @@ export default function FilesPage() {
     return () => unsubs.forEach((fn) => fn());
   }, [deviceId]);
 
+  // Detect when sender device goes offline and mark active receiving transfers as failed
+  useEffect(() => {
+    if (!lastSystemMessage) return;
+    if (lastSystemMessage.type !== 'device_status_changed') return;
+
+    const { device_id: offlineDeviceId, is_online } = lastSystemMessage;
+    if (is_online) return; // Only care about devices going offline
+
+    // Find active receiving transfers from this device and move them to history as failed
+    setTransfers(prev => {
+      const failed = prev.filter(
+        t => t.direction === 'receiving' && t.status === 'uploading' && t.sourceDeviceId === offlineDeviceId
+      );
+      const remaining = prev.filter(t => !failed.includes(t));
+
+      for (const t of failed) {
+        markTransferFailed(t.fileId, 'Sender device went offline').catch(err =>
+          logger.error('Failed to mark transfer as failed', err)
+        );
+        // Add to file history
+        setFileHistory(h => [{
+          eventId: `failed-${t.fileId}`,
+          deviceId: t.sourceDeviceId || offlineDeviceId,
+          fileId: t.fileId,
+          name: t.name,
+          size: t.size,
+          mimeType: '',
+          createdAt: new Date(),
+          status: 'failed' as const,
+          failReason: 'Sender went offline',
+        }, ...h]);
+        toast(`Transfer of "${t.name}" failed — sender went offline`, 'error');
+      }
+
+      return remaining;
+    });
+  }, [lastSystemMessage]);
+
+  // Clean up all timeout timers on unmount
+  useEffect(() => {
+    return () => {
+      chunkTimeoutTimers.current.forEach(timer => clearTimeout(timer));
+      chunkTimeoutTimers.current.clear();
+    };
+  }, []);
+
   // Track processed signal event IDs to ignore retransmissions from gap recovery
   const processedSignalIds = new Set<string>();
 
@@ -383,6 +526,12 @@ export default function FilesPage() {
       const fileId = payload.file_id;
 
       if (signal.type === 'offer') {
+        // Skip if this transfer already exists in IndexedDB (replayed event after refresh)
+        const existingTransfer = await getTransfer(fileId);
+        if (existingTransfer) {
+          console.log('[WebRTC] Skipping replayed offer — transfer already tracked', { fileId, status: existingTransfer.status });
+          return;
+        }
         console.log('[WebRTC] Received offer for', signal.fileName);
         await handleWebRTCOffer(fileId, event.device_id, { type: 'offer', sdp: signal.sdp }, {
           fileName: signal.fileName,
@@ -512,13 +661,13 @@ export default function FilesPage() {
       setTransfers((prev) =>
         prev.map((t) =>
           t.fileId === upload.fileId
-            ? { ...t, progress, speed, status: progress === 100 ? 'completed' : 'uploading' }
+            ? { ...t, progress, speed, status: 'uploading' }
             : t
         )
       );
     });
 
-    toast(`${file.name} sent successfully!`, 'success');
+    toast(`${file.name} sent — waiting for confirmation...`, 'info');
   }
 
   async function uploadFileInChunks(
@@ -624,6 +773,17 @@ export default function FilesPage() {
       const metadata = await receiveFileMetadata(event);
       console.log('[FILES PAGE] receiveFileMetadata result:', metadata);
       if (metadata) {
+        // Skip if this transfer already exists in IndexedDB (replayed event after refresh).
+        // Re-calling startTracking would overwrite receivedChunks to 0 and break progress.
+        const existingTransfer = await getTransfer(metadata.file_id);
+        if (existingTransfer) {
+          console.log('[FILES PAGE] Skipping replayed file:metadata — transfer already tracked', {
+            fileId: metadata.file_id,
+            status: existingTransfer.status,
+          });
+          return;
+        }
+
         console.log('[FILES PAGE] Starting transfer tracking:', { fileId: metadata.file_id, name: metadata.name });
 
         // Cache metadata for decryption
@@ -650,12 +810,16 @@ export default function FilesPage() {
           progress: 0,
           status: 'uploading',
           direction: 'receiving',
+          sourceDeviceId: event.device_id,
         };
         setTransfers(prev => {
           // Avoid duplicates (might already exist from resumed transfers)
           if (prev.some(t => t.fileId === metadata.file_id)) return prev;
           return [...prev, transfer];
         });
+
+        // Start chunk-arrival timeout (60s to receive first chunk)
+        resetChunkTimeout(metadata.file_id);
 
         // Process any orphaned chunk events that arrived before metadata
         const orphanedEvents = getOrphanedChunkEvents(metadata.file_id);
@@ -698,11 +862,17 @@ export default function FilesPage() {
         return;
       }
 
+      // Skip chunks for already-completed or failed transfers (replayed events after refresh)
+      const transferRecord = await getTransfer(fileId);
+      if (transferRecord && (transferRecord.status === 'complete' || transferRecord.status === 'failed')) {
+        return;
+      }
+
       // Check if we have metadata (either cached or in tracker)
       let metadata = metadataCache.current.get(fileId);
       if (!metadata) {
         // Try to get from tracker
-        const transfer = await getTransfer(fileId);
+        const transfer = transferRecord;
         if (transfer) {
           metadata = {
             file_id: fileId,
@@ -770,9 +940,16 @@ export default function FilesPage() {
         await sendChunkAck(fileId, chunk.chunkIndex);
 
         if (complete && transfer) {
-          // Transfer is complete - reassemble and download
+          // Transfer is complete — clear the timeout and reassemble
+          const existingTimer = chunkTimeoutTimers.current.get(fileId);
+          if (existingTimer) {
+            clearTimeout(existingTimer);
+            chunkTimeoutTimers.current.delete(fileId);
+          }
           await handleTransferComplete(fileId, metadata);
         } else if (transfer) {
+          // Reset chunk-arrival timeout (another 60s to get next chunk)
+          resetChunkTimeout(fileId);
           // Update progress
           const progress = getTransferProgress(transfer);
           setTransfers(prev =>
@@ -811,25 +988,29 @@ export default function FilesPage() {
       // Reassemble and download
       await reassembleAndDownloadFile(metadata, chunksMap);
 
-      // Update transfer status
-      setTransfers(prev =>
-        prev.map(t =>
-          t.fileId === fileId
-            ? { ...t, progress: 100, status: 'completed' }
-            : t
-        )
-      );
+      // Move from active transfers to history
+      setTransfers(prev => prev.filter(t => t.fileId !== fileId));
+      setFileHistory(prev => [{
+        eventId: `completed-recv-${fileId}`,
+        deviceId: metadata.device_id || '',
+        fileId,
+        name: metadata.name,
+        size: metadata.size || 0,
+        mimeType: metadata.mime_type || '',
+        createdAt: new Date(),
+        status: 'completed' as const,
+      }, ...prev]);
 
       // Send file:complete event to notify sender
       await sendFileCompleteEvent(fileId, metadata.name);
 
-      // Clean up tracker after successful download
-      await deleteTransfer(fileId);
+      // Delete chunks to free space but keep the transfer record as 'complete'
+      // so that event replay on page refresh won't restart the transfer
+      await deleteTransferChunks(fileId);
       metadataCache.current.delete(fileId);
 
       // Optionally prune processed set if it grows too large
       if (processedRef.size > 1000) {
-        // Reset if too large; in practice fileIds are unique per transfer
         processedFilesRef.current = new Set();
       }
 
@@ -953,13 +1134,18 @@ export default function FilesPage() {
 
         if (allAcked) {
           logger.info('All chunks acknowledged, upload complete', { fileId, name: upload.name });
-          setTransfers(prev =>
-            prev.map(t =>
-              t.fileId === fileId
-                ? { ...t, progress: 100, status: 'completed' }
-                : t
-            )
-          );
+          // Move from active transfers to history
+          setTransfers(prev => prev.filter(t => t.fileId !== fileId));
+          setFileHistory(prev => [{
+            eventId: `completed-send-${fileId}`,
+            deviceId: deviceId,
+            fileId,
+            name: upload.name,
+            size: upload.size,
+            mimeType: upload.mimeType,
+            createdAt: new Date(),
+            status: 'completed' as const,
+          }, ...prev]);
           // Clean up upload tracker
           await deleteUpload(fileId);
         }
@@ -1177,6 +1363,22 @@ export default function FilesPage() {
                       <Progress value={transfer.progress} className="h-2" />
                     </div>
                   )}
+                  {transfer.status === 'error' && (
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-destructive">{transfer.failReason || 'Transfer failed'}</p>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-xs"
+                        onClick={async () => {
+                          await deleteTransfer(transfer.fileId);
+                          setTransfers(prev => prev.filter(t => t.fileId !== transfer.fileId));
+                        }}
+                      >
+                        Dismiss
+                      </Button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -1207,21 +1409,46 @@ export default function FilesPage() {
               {fileHistory.map((file) => (
                 <div
                   key={file.eventId}
-                  className="flex items-center justify-between p-3 rounded-lg bg-muted/50"
+                  className={`flex items-center justify-between p-3 rounded-lg ${file.status === 'failed' ? 'bg-destructive/10' : 'bg-muted/50'}`}
                 >
                   <div className="flex items-center gap-3">
-                    <FileIcon className="h-5 w-5 text-muted-foreground" />
+                    <FileIcon className={`h-5 w-5 ${file.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`} />
                     <div>
                       <p className="text-sm font-medium">{file.name}</p>
                       <p className="text-xs text-muted-foreground">
                         {formatFileSize(file.size)} • {file.createdAt.toLocaleDateString()} {file.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </p>
+                      {file.status === 'failed' && file.failReason && (
+                        <p className="text-xs text-destructive mt-0.5">{file.failReason}</p>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">
-                      {file.deviceId === deviceId ? 'Sent' : 'Received'}
-                    </span>
+                    {file.status === 'failed' ? (
+                      <>
+                        <span className="text-xs text-destructive font-medium">Failed</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 text-xs"
+                          onClick={async () => {
+                            // Delete from the correct IndexedDB store
+                            if (file.eventId.startsWith('failed-send-')) {
+                              await deleteUpload(file.fileId);
+                            } else {
+                              await deleteTransfer(file.fileId);
+                            }
+                            setFileHistory(prev => prev.filter(f => f.eventId !== file.eventId));
+                          }}
+                        >
+                          Dismiss
+                        </Button>
+                      </>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {file.deviceId === deviceId ? 'Sent' : 'Received'}
+                      </span>
+                    )}
                   </div>
                 </div>
               ))}

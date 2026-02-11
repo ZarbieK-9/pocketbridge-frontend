@@ -27,6 +27,8 @@ export interface FileHistoryItem {
   size: number;
   mimeType: string;
   createdAt: Date;
+  status?: 'completed' | 'failed';
+  failReason?: string;
 }
 
 interface ServerEvent {

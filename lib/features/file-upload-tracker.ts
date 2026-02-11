@@ -27,7 +27,8 @@ export interface FileUploadRecord {
   encryptionKeyBase64: string; // Base64-encoded file encryption key
   sentChunks: number[]; // Chunk indices that have been sent
   ackedChunks: number[]; // Chunk indices that have been acknowledged by receiver
-  status: 'uploading' | 'waiting_acks' | 'complete' | 'stale';
+  status: 'uploading' | 'waiting_acks' | 'complete' | 'stale' | 'failed';
+  failReason?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -288,6 +289,23 @@ export async function getIncompleteUploads(): Promise<FileUploadRecord[]> {
 }
 
 /**
+ * Get all failed uploads
+ */
+export async function getFailedUploads(): Promise<FileUploadRecord[]> {
+  const db = await openDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(UPLOADS_STORE, 'readonly');
+    const store = tx.objectStore(UPLOADS_STORE);
+    const index = store.index('status');
+    const request = index.getAll('failed');
+
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
  * Get chunks that need to be re-sent (sent but not acknowledged)
  */
 export function getUnackedChunks(upload: FileUploadRecord): number[] {
@@ -300,6 +318,39 @@ export function getUnackedChunks(upload: FileUploadRecord): number[] {
 export function getUnsentChunks(upload: FileUploadRecord): number[] {
   const allChunks = Array.from({ length: upload.totalChunks }, (_, i) => i);
   return allChunks.filter(idx => !upload.sentChunks.includes(idx));
+}
+
+/**
+ * Mark an upload as failed with a reason
+ */
+export async function markUploadFailed(fileId: string, reason: string): Promise<void> {
+  const db = await openDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(UPLOADS_STORE, 'readwrite');
+    const store = tx.objectStore(UPLOADS_STORE);
+    const getRequest = store.get(fileId);
+
+    getRequest.onsuccess = () => {
+      const upload = getRequest.result as FileUploadRecord | null;
+      if (!upload || upload.status === 'complete') {
+        resolve();
+        return;
+      }
+
+      upload.status = 'failed';
+      upload.failReason = reason;
+      upload.updatedAt = Date.now();
+
+      const putRequest = store.put(upload);
+      putRequest.onsuccess = () => {
+        logger.info('[FileUploadTracker] Upload marked as failed', { fileId, reason });
+        resolve();
+      };
+      putRequest.onerror = () => reject(putRequest.error);
+    };
+    getRequest.onerror = () => reject(getRequest.error);
+  });
 }
 
 /**
@@ -358,7 +409,7 @@ export async function cleanupStaleUploads(): Promise<number> {
 
         // Check if upload is stale (old and incomplete)
         if ((upload.status === 'uploading' || upload.status === 'waiting_acks') && upload.updatedAt < threshold) {
-          logger.info('[FileUploadTracker] Cleaning up stale upload', {
+          logger.info('[FileUploadTracker] Marking stale upload as failed', {
             fileId: upload.fileId,
             name: upload.name,
             sentChunks: upload.sentChunks.length,
@@ -367,19 +418,11 @@ export async function cleanupStaleUploads(): Promise<number> {
             ageMinutes: Math.round((Date.now() - upload.updatedAt) / 60000),
           });
 
-          // Delete the upload record
-          uploadsStore.delete(cursor.primaryKey);
-
-          // Delete associated chunks
-          const chunksIndex = chunksStore.index('fileId');
-          const chunksRequest = chunksIndex.openCursor(upload.fileId);
-          chunksRequest.onsuccess = () => {
-            const chunkCursor = chunksRequest.result;
-            if (chunkCursor) {
-              chunksStore.delete(chunkCursor.primaryKey);
-              chunkCursor.continue();
-            }
-          };
+          // Mark as failed instead of silently deleting
+          upload.status = 'failed';
+          upload.failReason = 'Upload timed out';
+          upload.updatedAt = Date.now();
+          uploadsStore.put(upload);
 
           cleanedCount++;
         }

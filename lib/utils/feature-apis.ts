@@ -13,14 +13,6 @@ export interface FeatureApiConfig {
   deviceId: string;
 }
 
-export interface ClipboardItem {
-  id: string;
-  content: string;
-  type: string;
-  created_at: string;
-  device_id: string;
-}
-
 export interface Message {
   id: string;
   content: string;
@@ -61,38 +53,6 @@ function createTimeoutController(timeoutMs: number = 10000): { controller: Abort
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   return { controller, timeoutId };
-}
-
-/**
- * Clipboard Feature APIs
- */
-export async function getClipboardHistory(config: FeatureApiConfig): Promise<ClipboardItem[]> {
-  const { controller, timeoutId } = createTimeoutController();
-  
-  try {
-    const response = await fetch(`${config.apiUrl}/api/clipboard/history`, {
-      method: 'GET',
-      headers: {
-        'X-User-ID': config.userId,
-        'X-Device-ID': config.deviceId,
-        'Content-Type': 'application/json',
-      },
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
-    const data = await response.json();
-    return data.items || [];
-  } catch (error) {
-    clearTimeout(timeoutId);
-    logger.error('Failed to fetch clipboard history', error);
-    return [];
-  }
 }
 
 /**

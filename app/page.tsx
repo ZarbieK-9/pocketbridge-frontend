@@ -15,13 +15,12 @@ import { MainLayout } from "@/components/layout/main-layout"
 import { Header } from "@/components/layout/header"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Clipboard, FileText, MessageSquare, FolderOpen, Plus, Smartphone, Check, AlertCircle, Download, File } from "lucide-react"
-import { DevicePresenceList } from "@/components/device-presence"
+import { FileText, MessageSquare, FolderOpen, Plus, Smartphone, Check, AlertCircle, Download, File, Trash2 } from "lucide-react"
 import { useCrypto } from "@/hooks/use-crypto"
 import { useWebSocket } from "@/hooks/use-websocket"
 import { loadUserProfile, type UserProfile } from "@/lib/utils/user-profile"
-import { getOrCreateDeviceId, getDeviceRole } from "@/lib/utils/device"
-import { getWsUrl, loadPairedAccount, savePairedAccount, updatePairedDevices, type PairedAccountInfo } from "@/lib/utils/storage"
+import { getOrCreateDeviceId, getOrCreateDeviceName, getDeviceRole } from "@/lib/utils/device"
+import { getWsUrl, loadPairedAccount, savePairedAccount, clearPairedAccount, updatePairedDevices, type PairedAccountInfo } from "@/lib/utils/storage"
 import { useEffect, useState, useRef } from "react"
 import { logger } from "@/lib/utils/logger"
 import Link from "next/link"
@@ -58,9 +57,9 @@ interface ActivityEvent {
 
 export default function DashboardPage() {
   const { identityKeyPair, isInitialized } = useCrypto();
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://pocketbridge.duckdns.org';
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://terraqueous-nonmarketable-burt.ngrok-free.dev';
   const deviceId = getOrCreateDeviceId();
-  const wsUrl = getWsUrl() || 'wss://pocketbridge.duckdns.org/ws';
+  const wsUrl = getWsUrl() || 'wss://terraqueous-nonmarketable-burt.ngrok-free.dev/ws';
   const { status: connectionStatus, isConnected, lastSystemMessage } = useWebSocket({
     url: wsUrl,
     deviceId,
@@ -75,6 +74,7 @@ export default function DashboardPage() {
   const [isLoadingDevices, setIsLoadingDevices] = useState(false);
   const [isLoadingActivity, setIsLoadingActivity] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [removingDeviceId, setRemovingDeviceId] = useState<string | null>(null);
   const lastDeviceCountRef = useRef<number>(0);
   const retryCountRef = useRef<number>(0);
   const isMountedRef = useRef<boolean>(true);
@@ -354,6 +354,58 @@ export default function DashboardPage() {
     }
   }, [lastSystemMessage]);
 
+  const handleRemoveDevice = async (device: PairedDevice) => {
+    const confirmed = confirm(
+      `Remove "${device.device_name || 'Unknown Device'}"?\n\nThis device will be disconnected and syncing will stop. You'll need to pair again to reconnect.`
+    );
+    if (!confirmed) return;
+
+    setRemovingDeviceId(device.device_id);
+    try {
+      const response = await fetch(`${apiUrl}/api/devices/${device.device_id}`, {
+        method: 'DELETE',
+        headers: {
+          'X-User-ID': identityKeyPair?.publicKeyHex || '',
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to remove device (${response.status})`);
+      }
+
+      // Remove device from local state
+      setPairedDevices(prev => prev.filter(d => d.device_id !== device.device_id));
+
+      // If no paired devices left, clear paired account
+      const remaining = pairedDevices.filter(d => d.device_id !== device.device_id);
+      if (remaining.length === 0) {
+        clearPairedAccount();
+        setPairedAccount(null);
+      } else {
+        // Update persistent storage with remaining devices
+        const updated = loadPairedAccount();
+        if (updated) {
+          updated.devices = remaining.map(d => ({
+            device_id: d.device_id,
+            device_name: d.device_name,
+            device_type: undefined as 'mobile' | 'desktop' | 'web' | undefined,
+            is_online: d.is_online,
+            last_seen: d.last_seen || Date.now(),
+          }));
+          savePairedAccount(updated);
+        }
+      }
+
+      logger.info('Device removed successfully', { deviceId: device.device_id });
+    } catch (error) {
+      logger.error('Failed to remove device', error);
+      alert('Failed to remove device. Please try again.');
+    } finally {
+      setRemovingDeviceId(null);
+    }
+  };
+
   return (
     <MainLayout>
       <Header title="Dashboard" description="Overview of your devices and recent activity" />
@@ -395,32 +447,23 @@ export default function DashboardPage() {
           </Card>
         )}
 
-        {/* User Profile Welcome - Always show username */}
-        {userProfile && userProfile.displayName && (
+        {/* Device Welcome */}
+        {userProfile && (
           <Card className="bg-primary/5 border-primary/20">
             <CardContent className="pt-6">
               <div className="flex items-center gap-4">
                 <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
                   <span className="text-lg font-semibold text-primary">
-                    {userProfile.displayName.charAt(0).toUpperCase()}
+                    {getOrCreateDeviceName().charAt(0).toUpperCase()}
                   </span>
                 </div>
                 <div className="flex-1">
-                  {/* Device-specific welcome messages */}
-                  {deviceRole === 'sharer' && (
-                    <h2 className="text-lg font-semibold">Welcome back, {userProfile.displayName}! (Device A - Sharer)</h2>
-                  )}
-                  {deviceRole === 'receiver' && (
-                    <h2 className="text-lg font-semibold">Welcome back, {userProfile.displayName}! (Device B - Receiver)</h2>
-                  )}
-                  {!deviceRole && (
-                    <h2 className="text-lg font-semibold">Welcome back, {userProfile.displayName}!</h2>
-                  )}
+                  <h2 className="text-lg font-semibold">{getOrCreateDeviceName()}</h2>
                   <p className="text-sm text-muted-foreground flex items-center gap-2">
                     {isConnected ? (
                       <>
                         <Check className="h-4 w-4 text-green-600" />
-                        {pairedDevices.filter(d => d.is_online).length > 0 
+                        {pairedDevices.filter(d => d.is_online).length > 0
                           ? `${pairedDevices.filter(d => d.is_online).length} device${pairedDevices.filter(d => d.is_online).length > 1 ? 's' : ''} online`
                           : 'No devices online'
                         }
@@ -532,9 +575,6 @@ export default function DashboardPage() {
 
               <div className="space-y-3">
                 {pairedDevices.filter(d => d.is_online).map((device: PairedDevice) => {
-                  // Show the device's user's display name instead of device name
-                  const displayName = device.user_display_name || device.device_name || 'Connected User';
-
                   return (
                     <div key={device.device_id} className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors">
                       <div className="flex items-center gap-3 flex-1">
@@ -544,7 +584,7 @@ export default function DashboardPage() {
                           <div className="absolute inset-0 h-3 w-3 rounded-full bg-green-500 animate-ping opacity-75" />
                         </div>
                         <div className="min-w-0">
-                          <p className="font-medium text-sm truncate">{displayName}</p>
+                          <p className="font-medium text-sm truncate">{device.device_name || 'Other Device'}</p>
                           <p className="text-xs text-muted-foreground flex items-center gap-1">
                             <span className="text-green-600 font-medium">
                               ● Online
@@ -552,8 +592,19 @@ export default function DashboardPage() {
                           </p>
                         </div>
                       </div>
-                      <Button variant="ghost" size="sm" asChild>
-                        <Link href="/settings">Manage</Link>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => handleRemoveDevice(device)}
+                        disabled={removingDeviceId === device.device_id}
+                      >
+                        {removingDeviceId === device.device_id ? (
+                          <span className="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full" />
+                        ) : (
+                          <Trash2 className="h-4 w-4 mr-1" />
+                        )}
+                        {removingDeviceId === device.device_id ? 'Removing...' : 'Remove'}
                       </Button>
                     </div>
                   );
@@ -583,13 +634,7 @@ export default function DashboardPage() {
             <CardTitle>Quick Actions</CardTitle>
             <CardDescription>Common tasks across your devices</CardDescription>
           </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent hover:bg-primary/5" asChild>
-              <Link href="/clipboard" aria-label="Copy to Clipboard">
-                <Clipboard className="h-6 w-6 text-primary" aria-hidden="true" />
-                <span>Copy to Clipboard</span>
-              </Link>
-            </Button>
+          <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent hover:bg-primary/5" asChild>
               <Link href="/scratchpad" aria-label="Open Scratchpad">
                 <FileText className="h-6 w-6 text-primary" aria-hidden="true" />
@@ -610,15 +655,6 @@ export default function DashboardPage() {
             </Button>
           </CardContent>
         </Card>
-
-        {/* Connected Devices Panel */}
-        {identityKeyPair?.publicKeyHex ? (
-          <DevicePresenceList 
-            apiUrl={apiUrl}
-            userId={identityKeyPair.publicKeyHex}
-            className=""
-          />
-        ) : null}
 
         {/* Recent Activity */}
         <Card>

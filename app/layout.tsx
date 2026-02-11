@@ -13,13 +13,14 @@ import { OnboardingGuard } from "@/components/onboarding/onboarding-guard"
 import { ToastContainer } from "@/components/ui/toast"
 import { StorageQuotaListener } from "@/components/storage-quota-listener"
 import "@/lib/utils/debug" // Enable browser console debugging
+import { NgrokFetchInterceptor } from "@/components/ngrok-fetch-interceptor"
 import "./globals.css"
 
 const inter = Inter({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
   title: "PocketBridge - Secure Cross-Device Workspace",
-  description: "End-to-end encrypted clipboard sync, scratchpad, messaging, and file sharing across your devices",
+  description: "End-to-end encrypted scratchpad, messaging, and file sharing across your devices",
   generator: "next.js",
   manifest: "/manifest.json",
   icons: {
@@ -28,7 +29,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "PocketBridge - Secure Cross-Device Workspace",
-    description: "End-to-end encrypted clipboard sync, scratchpad, messaging, and file sharing across your devices",
+    description: "End-to-end encrypted scratchpad, messaging, and file sharing across your devices",
     type: "website",
     siteName: "PocketBridge",
     images: [
@@ -43,7 +44,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "PocketBridge - Secure Cross-Device Workspace",
-    description: "End-to-end encrypted clipboard sync, scratchpad, messaging, and file sharing across your devices",
+    description: "End-to-end encrypted scratchpad, messaging, and file sharing across your devices",
     images: ["/icon-512.jpg"],
   },
   robots: {
@@ -98,6 +99,7 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <ErrorBoundary>
+            <NgrokFetchInterceptor />
             <ServiceWorkerRegister />
             <BackgroundSync />
             <WebVitalsReporter />

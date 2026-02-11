@@ -16,7 +16,6 @@ import { Switch } from "@/components/ui/switch"
 import { Separator } from "@/components/ui/separator"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { PWAInstaller } from "@/components/pwa-installer"
-import { DevicePresenceList } from "@/components/device-presence"
 import { SessionTimeout } from "@/components/session-timeout"
 import { useCrypto } from "@/hooks/use-crypto"
 import { useWebSocket } from "@/hooks/use-websocket"
@@ -265,27 +264,6 @@ export default function SettingsPage() {
           onExpired={() => logger.warn('Session expired')}
         />)}
 
-        {/* Connected Devices */}
-        {userId ? (
-          <DevicePresenceList 
-            apiUrl={apiUrl}
-            userId={userId}
-          />
-        ) : (
-          <Card>
-            <CardHeader>
-              <CardTitle>Connected Devices</CardTitle>
-              <CardDescription>Manage your synced devices</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="rounded-lg border border-dashed border-border p-8 text-center">
-                <p className="text-sm text-muted-foreground">No user identity available</p>
-                <p className="mt-2 text-xs text-muted-foreground">Pair or initialize crypto to connect devices</p>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
         {/* Pair Device */}
         <Card>
           <CardHeader>
@@ -415,14 +393,6 @@ export default function SettingsPage() {
             <CardDescription>Control how data syncs between devices</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>Auto-sync clipboard</Label>
-                <p className="text-sm text-muted-foreground">Automatically sync clipboard content</p>
-              </div>
-              <Switch defaultChecked />
-            </div>
-            <Separator />
             <div className="flex items-center justify-between">
               <div className="space-y-0.5">
                 <Label>Sync on mobile data</Label>

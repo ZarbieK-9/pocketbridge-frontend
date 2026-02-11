@@ -39,7 +39,7 @@ import type { EncryptedEvent } from '@/types';
 const TEST_WS_URL =
   process.env.POCKETBRIDGE_TEST_WS_URL ||
   process.env.NEXT_PUBLIC_WS_URL ||
-  'ws://pocketbridge.duckdns.org/ws';
+  'wss://terraqueous-nonmarketable-burt.ngrok-free.dev/ws';
 
 // Mock modules
 vi.mock('@/lib/utils/device', () => ({

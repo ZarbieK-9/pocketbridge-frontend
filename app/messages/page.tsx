@@ -19,7 +19,7 @@ import {
   type ChatMessage,
 } from '@/lib/features/messages';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
-import { loadUserProfile } from '@/lib/utils/user-profile';
+import { loadPairedAccount } from '@/lib/utils/storage';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { Button } from '@/components/ui/button';
 import { Send, Bell, BellOff, ShieldCheck, MessageSquareLock } from 'lucide-react';
@@ -103,8 +103,8 @@ export default function SecretChatPage() {
         setSyncStatus('synced');
 
         if (isFromOtherDevice) {
-          const profile = loadUserProfile();
-          const senderName = profile?.displayName || 'PocketBridge';
+          const remoteId = (lastEvent as EncryptedEvent).device_id;
+          const senderName = getRemoteDeviceName(remoteId);
           showMessageNotification(senderName, msg.text, () => {
             window.focus();
           });
@@ -169,6 +169,16 @@ export default function SecretChatPage() {
       e.preventDefault();
       handleSend();
     }
+  }
+
+  // Look up a friendly device name from paired account info
+  function getRemoteDeviceName(remoteDeviceId: string): string {
+    const pairedAccount = loadPairedAccount();
+    if (pairedAccount?.devices) {
+      const device = pairedAccount.devices.find(d => d.device_id === remoteDeviceId);
+      if (device?.device_name) return device.device_name;
+    }
+    return 'Other device';
   }
 
   function formatTime(timestamp: number) {
@@ -273,7 +283,7 @@ export default function SecretChatPage() {
                     {formatTime(msg.timestamp)}
                     {!msg.isLocal && (
                       <span className="ml-1.5">
-                        {msg.deviceId.substring(0, 6)}
+                        {getRemoteDeviceName(msg.deviceId)}
                       </span>
                     )}
                   </p>

@@ -16,7 +16,7 @@ import { Label } from '@/components/ui/label';
 import { CheckCircle2, ArrowRight, Sparkles } from 'lucide-react';
 import { validateDeviceName } from '@/lib/utils/validation';
 import { updateDeviceName } from '@/lib/utils/device';
-import { updateUserProfile, completeOnboarding, loadUserProfile, saveUserProfile, type UserProfile } from '@/lib/utils/user-profile';
+import { completeOnboarding, loadUserProfile, saveUserProfile } from '@/lib/utils/user-profile';
 import { logger } from '@/lib/utils/logger';
 import { ValidationError } from '@/lib/utils/errors';
 
@@ -32,7 +32,6 @@ export function OnboardingFlow({ userId, currentDeviceName, onComplete }: Onboar
   const [step, setStep] = useState<OnboardingStep>('setup');
   const [deviceName, setDeviceName] = useState(currentDeviceName);
   const [deviceNameError, setDeviceNameError] = useState<string | null>(null);
-  const [displayName, setDisplayName] = useState('');
   const [isCompleting, setIsCompleting] = useState(false);
   const [completionError, setCompletionError] = useState<string | null>(null);
   
@@ -76,13 +75,9 @@ export function OnboardingFlow({ userId, currentDeviceName, onComplete }: Onboar
     setCompletionError(null);
     
     try {
-      // Validate device name
+      // Validate and save device name
       const validatedDeviceName = validateDeviceName(deviceName);
-
-      // If display name is set, use it as the device name for consistency
-      // This ensures "Welcome back, X" and "Device connected: X" show the same name
-      const effectiveDeviceName = displayName.trim() || validatedDeviceName;
-      updateDeviceName(effectiveDeviceName);
+      updateDeviceName(validatedDeviceName);
 
       // Ensure profile exists first
       let existing = loadUserProfile();
@@ -100,21 +95,10 @@ export function OnboardingFlow({ userId, currentDeviceName, onComplete }: Onboar
         };
         saveUserProfile(existing);
       }
-      
-      // Save user profile (with server sync and signature verification)
-      const profileUpdates: { displayName?: string } = {};
-      if (displayName && displayName.trim()) {
-        profileUpdates.displayName = displayName.trim();
-      }
-      
-      // Update profile if there are actual updates
-      if (Object.keys(profileUpdates).length > 0) {
-        await updateUserProfile(profileUpdates, userId);
-      }
-      
+
       // Mark onboarding as complete (saves locally, syncs to server in background)
       await completeOnboarding(userId);
-      logger.info('Onboarding completed successfully', { userId, deviceName: effectiveDeviceName, displayName });
+      logger.info('Onboarding completed successfully', { userId, deviceName: validatedDeviceName });
       
       setStep('complete');
       // Auto-redirect after 1.5 seconds
@@ -175,25 +159,6 @@ export function OnboardingFlow({ userId, currentDeviceName, onComplete }: Onboar
                 )}
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="onboarding-display-name">Your Name (Optional)</Label>
-                <Input
-                  id="onboarding-display-name"
-                  type="text"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && canComplete()) {
-                      handleComplete();
-                    }
-                  }}
-                  placeholder="How should other devices see you?"
-                  maxLength={50}
-                />
-                <p className="text-xs text-muted-foreground">
-                  You can change this anytime in settings.
-                </p>
-              </div>
             </div>
 
             {completionError && (

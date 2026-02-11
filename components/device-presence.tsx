@@ -227,7 +227,7 @@ export function DevicePresenceList({ apiUrl, userId, className }: DevicePresence
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="font-medium truncate">
-                      {userDisplayName || device.device_name}
+                      {device.device_name || 'Unknown Device'}
                       {device.is_current && (
                         <span className="ml-2 text-xs text-muted-foreground">(This device)</span>
                       )}

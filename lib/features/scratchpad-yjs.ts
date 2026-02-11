@@ -119,8 +119,11 @@ export async function loadYjsState(): Promise<string | null> {
  * so state is saved even when the network send fails.
  */
 export async function sendYjsUpdate(update: Uint8Array): Promise<void> {
+  console.log('[ScratchpadSync:SEND] sendYjsUpdate called, update size:', update.length);
+
   const sharedKey = await getSharedEncryptionKey();
   if (!sharedKey) {
+    console.error('[ScratchpadSync:SEND] No shared encryption key!');
     throw new Error('Shared encryption key not available');
   }
 
@@ -145,6 +148,8 @@ export async function sendYjsUpdate(update: Uint8Array): Promise<void> {
   const deviceId = getOrCreateDeviceId();
   const wsClient = getWebSocketClient();
 
+  console.log('[ScratchpadSync:SEND] Sending scratchpad_sync via WS, deviceId:', deviceId);
+
   // Send directly over WebSocket — server just relays, no storage
   wsClient.sendDirect({
     type: 'scratchpad_sync',
@@ -153,6 +158,8 @@ export async function sendYjsUpdate(update: Uint8Array): Promise<void> {
       device_id: deviceId,
     },
   });
+
+  console.log('[ScratchpadSync:SEND] Message sent successfully');
 }
 
 /**
@@ -161,25 +168,33 @@ export async function sendYjsUpdate(update: Uint8Array): Promise<void> {
 export async function receiveYjsUpdate(
   event: EncryptedEvent,
 ): Promise<Uint8Array | null> {
+  console.log('[ScratchpadSync:RECV] receiveYjsUpdate called, event type:', event.type, 'device_id:', event.device_id);
+
   try {
     const sharedKey = await getSharedEncryptionKey();
     if (!sharedKey) {
-      console.error('[Scratchpad] Shared encryption key not available');
+      console.error('[ScratchpadSync:RECV] No shared encryption key!');
       return null;
     }
 
+    console.log('[ScratchpadSync:RECV] Decrypting payload...');
     const payload = await decryptPayload(
       event.encrypted_payload,
       sharedKey,
     ) as ScratchpadUpdatePayload;
 
+    console.log('[ScratchpadSync:RECV] Decrypted OK, payload type:', payload.type);
+
     if (payload.type !== 'yjs_update') {
+      console.warn('[ScratchpadSync:RECV] Unexpected payload type:', payload.type);
       return null;
     }
 
-    return decodeYjsUpdate(payload.update);
+    const update = decodeYjsUpdate(payload.update);
+    console.log('[ScratchpadSync:RECV] Decoded Yjs update, size:', update.length);
+    return update;
   } catch (error) {
-    console.error('[Scratchpad] Failed to decrypt Yjs update:', error);
+    console.error('[ScratchpadSync:RECV] Failed to decrypt Yjs update:', error);
     return null;
   }
 }
@@ -188,12 +203,16 @@ export async function receiveYjsUpdate(
  * Apply Yjs update to document (from remote) and persist
  */
 export async function applyYjsUpdate(update: Uint8Array): Promise<void> {
+  console.log('[ScratchpadSync:APPLY] applyYjsUpdate called, update size:', update.length);
   if (!yjsDoc) {
     await initYjsDoc();
   }
   const Yjs = await getYjs();
+  const textBefore = yjsText?.toString() || '';
   // Apply with 'remote' origin to avoid triggering onYjsUpdate send loop
   Yjs.applyUpdate(yjsDoc!, update, 'remote');
+  const textAfter = yjsText?.toString() || '';
+  console.log('[ScratchpadSync:APPLY] Text changed:', textBefore !== textAfter, '| before length:', textBefore.length, '| after length:', textAfter.length);
 
   // Persist state after receiving remote update
   await saveYjsState();
@@ -213,10 +232,36 @@ export async function setYjsTextContent(content: string): Promise<void> {
     return; // No change
   }
 
-  // Wrap in transaction with 'local' origin so onYjsUpdate handler fires
+  // Compute minimal diff to avoid deleting+reinserting the entire document
+  // This produces smaller Yjs updates and preserves CRDT history correctly
   yjsDoc!.transact(() => {
-    text.delete(0, current.length);
-    text.insert(0, content);
+    // Find common prefix
+    let prefixLen = 0;
+    while (prefixLen < current.length && prefixLen < content.length && current[prefixLen] === content[prefixLen]) {
+      prefixLen++;
+    }
+
+    // Find common suffix (after prefix)
+    let suffixLen = 0;
+    while (
+      suffixLen < (current.length - prefixLen) &&
+      suffixLen < (content.length - prefixLen) &&
+      current[current.length - 1 - suffixLen] === content[content.length - 1 - suffixLen]
+    ) {
+      suffixLen++;
+    }
+
+    // Delete the changed middle section
+    const deleteLen = current.length - prefixLen - suffixLen;
+    if (deleteLen > 0) {
+      text.delete(prefixLen, deleteLen);
+    }
+
+    // Insert the new middle section
+    const insertStr = content.slice(prefixLen, content.length - suffixLen);
+    if (insertStr.length > 0) {
+      text.insert(prefixLen, insertStr);
+    }
   }, 'local');
 }
 
@@ -265,11 +310,14 @@ export async function rebuildYjsFromEvents(): Promise<string> {
  * not just incremental updates from new keystrokes.
  */
 export async function sendFullState(): Promise<void> {
+  console.log('[ScratchpadSync:FULL] sendFullState called, yjsDoc exists:', !!yjsDoc);
   if (!yjsDoc) return;
   const Yjs = await getYjs();
   const state = Yjs.encodeStateAsUpdate(yjsDoc);
+  console.log('[ScratchpadSync:FULL] Full state size:', state.length);
   if (state.length > 0) {
     await sendYjsUpdate(state);
+    console.log('[ScratchpadSync:FULL] Full state sent');
   }
 }
 
@@ -284,10 +332,13 @@ export async function onYjsUpdate(
   }
 
   const handler = (update: Uint8Array, origin: any) => {
+    console.log('[ScratchpadSync:YJS] Yjs update event, origin:', origin, 'size:', update.length);
     // Don't send updates that originated from remote (to avoid loops)
     if (origin !== 'local') {
+      console.log('[ScratchpadSync:YJS] Skipping non-local update');
       return;
     }
+    console.log('[ScratchpadSync:YJS] Calling send callback for local update');
     // Call the (possibly async) callback — errors handled by caller's try/catch
     callback(update);
   };

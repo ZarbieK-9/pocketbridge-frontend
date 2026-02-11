@@ -41,14 +41,38 @@ export function getOrCreateDeviceId(): string {
   return deviceId
 }
 
+/**
+ * Generate a random gibberish-but-pronounceable device name.
+ * Combines random syllables into a fun made-up word like "Zorbik", "Plunka", "Gwembo".
+ */
+function generateFunName(): string {
+  const onsets = ['bl','br','cl','cr','dr','fl','fr','gl','gr','kw','pl','pr','sk','sl','sn','sp','st','sw','tr','tw','wr','z','b','d','f','g','j','k','l','m','n','p','r','s','t','v','w']
+  const vowels = ['a','e','i','o','u','ai','ou','ee','oo']
+  const codas = ['b','d','f','g','k','l','m','n','p','r','s','t','x','z','nk','mp','rb','rk','lp','ft']
+
+  const pick = <T>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)]
+
+  // 2-3 syllables
+  const syllableCount = 2 + Math.floor(Math.random() * 2)
+  let name = ''
+  for (let i = 0; i < syllableCount; i++) {
+    name += pick(onsets) + pick(vowels)
+    // Add coda to all but sometimes the last syllable
+    if (i < syllableCount - 1 || Math.random() > 0.4) {
+      name += pick(codas)
+    }
+  }
+
+  // Capitalize first letter
+  return name.charAt(0).toUpperCase() + name.slice(1)
+}
+
 export function getOrCreateDeviceName(): string {
   if (typeof window === "undefined") return "Unknown Device"
 
   let deviceName = localStorage.getItem(STORAGE_KEYS.DEVICE_NAME)
   if (!deviceName) {
-    const type = getDeviceType()
-    const timestamp = new Date().toLocaleDateString()
-    deviceName = `${type.charAt(0).toUpperCase() + type.slice(1)} - ${timestamp}`
+    deviceName = generateFunName()
     localStorage.setItem(STORAGE_KEYS.DEVICE_NAME, deviceName)
   }
   return deviceName

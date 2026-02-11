@@ -68,23 +68,11 @@ export default function ScratchpadPage() {
   useEffect(() => {
     if (!cryptoInitialized || yjsInitialized) return;
 
-    let yjsTextInstance: any = null;
     let cancelled = false;
 
     async function setup() {
       try {
         await initYjsDoc();
-        yjsTextInstance = await getYjsText();
-
-        if (cancelled) return;
-
-        // Listen for Yjs changes and update React state
-        const observer = () => {
-          if (yjsTextInstance) {
-            setText(yjsTextInstance.toString());
-          }
-        };
-        yjsTextInstance.observe(observer);
 
         // Load existing content: try localStorage first, then fall back to IndexedDB events
         try {
@@ -104,12 +92,6 @@ export default function ScratchpadPage() {
           setYjsInitialized(true);
           setIsLoading(false);
         }
-
-        return () => {
-          if (yjsTextInstance) {
-            yjsTextInstance.unobserve(observer);
-          }
-        };
       } catch (error) {
         logger.error('[Scratchpad] Failed to initialize Yjs:', error);
         if (!cancelled) {
@@ -118,34 +100,72 @@ export default function ScratchpadPage() {
       }
     }
 
-    const cleanupPromise = setup();
+    setup();
 
     return () => {
       cancelled = true;
-      cleanupPromise.then(cleanupFn => cleanupFn?.());
     };
   }, [cryptoInitialized, yjsInitialized]);
+
+  // Observe Yjs text changes and update React state
+  // Separate effect so the observer persists beyond initialization
+  useEffect(() => {
+    if (!yjsInitialized) return;
+
+    let yjsTextInstance: any = null;
+    let observer: (() => void) | null = null;
+    let cancelled = false;
+
+    async function attachObserver() {
+      yjsTextInstance = await getYjsText();
+      if (cancelled) return;
+
+      observer = () => {
+        if (yjsTextInstance) {
+          console.log('[ScratchpadSync:OBSERVER] Yjs text changed, updating React state');
+          setText(yjsTextInstance.toString());
+        }
+      };
+      yjsTextInstance.observe(observer);
+      console.log('[ScratchpadSync:OBSERVER] Observer attached');
+    }
+
+    attachObserver();
+
+    return () => {
+      cancelled = true;
+      if (yjsTextInstance && observer) {
+        yjsTextInstance.unobserve(observer);
+        console.log('[ScratchpadSync:OBSERVER] Observer detached');
+      }
+    };
+  }, [yjsInitialized]);
 
   // Set up sync sending when WebSocket is connected AND Yjs is ready
   // Both conditions must be true — using yjsInitialized (state, not ref)
   // ensures this effect re-runs when Yjs finishes async initialization
   useEffect(() => {
+    console.log('[ScratchpadSync:PAGE] Send effect check — sessionKeys:', !!sessionKeys, 'yjsInitialized:', yjsInitialized);
     if (!sessionKeys || !yjsInitialized) return;
 
     let cancelled = false;
 
     async function setupSync() {
+      console.log('[ScratchpadSync:PAGE] Setting up sync sending...');
       // Register the Yjs update listener
       const unsub = await onYjsUpdate(async (update) => {
         // Always persist locally, regardless of send outcome
         await saveYjsState();
         try {
           setSyncStatus('sending');
+          console.log('[ScratchpadSync:PAGE] Sending Yjs update, size:', update.length);
           await sendYjsUpdate(update);
           setLastSaved(new Date());
           setSyncStatus('synced');
+          console.log('[ScratchpadSync:PAGE] Update sent OK');
         } catch (error) {
           logger.error('[Scratchpad] Failed to send Yjs update:', error);
+          console.error('[ScratchpadSync:PAGE] Send FAILED:', error);
           setSyncStatus('error');
         }
       });
@@ -159,9 +179,12 @@ export default function ScratchpadPage() {
 
       // Send the full Yjs document state so the other device gets all existing content
       try {
+        console.log('[ScratchpadSync:PAGE] Sending full state on connect...');
         await sendFullState();
+        console.log('[ScratchpadSync:PAGE] Full state sent OK');
       } catch (error) {
         // Non-fatal: incremental updates will still work
+        console.warn('[ScratchpadSync:PAGE] Failed to send full state:', error);
         logger.warn('[Scratchpad] Failed to send full state on connect:', { error: error instanceof Error ? error.message : String(error) });
       }
     }
@@ -181,21 +204,32 @@ export default function ScratchpadPage() {
   // This avoids the lastEvent race where a non-scratchpad event can overwrite
   // lastEvent before React re-renders, causing scratchpad events to be lost
   useEffect(() => {
+    console.log('[ScratchpadSync:PAGE] Receive effect check — sessionKeys:', !!sessionKeys, 'deviceId:', deviceId, 'yjsInitialized:', yjsInitialized);
     if (!sessionKeys || !deviceId || !yjsInitialized) return;
 
+    console.log('[ScratchpadSync:PAGE] Registering incoming event handler, local deviceId:', deviceId);
     const client = getWebSocketClient();
     const unsubscribe = client.onEvent(async (event) => {
       if (event.type !== 'scratchpad:op') return;
-      if (event.device_id === deviceId) return;
+      console.log('[ScratchpadSync:PAGE] Got scratchpad:op event, from device:', event.device_id, 'local device:', deviceId);
+      if (event.device_id === deviceId) {
+        console.log('[ScratchpadSync:PAGE] Skipping own event');
+        return;
+      }
 
       try {
+        console.log('[ScratchpadSync:PAGE] Processing remote update...');
         const update = await receiveYjsUpdate(event);
         if (update) {
           await applyYjsUpdate(update);
           setSyncStatus('synced');
+          console.log('[ScratchpadSync:PAGE] Remote update applied successfully');
+        } else {
+          console.warn('[ScratchpadSync:PAGE] receiveYjsUpdate returned null');
         }
       } catch (error) {
         logger.error('[Scratchpad] Failed to apply update:', error);
+        console.error('[ScratchpadSync:PAGE] Failed to apply update:', error);
         setSyncStatus('error');
       }
     });
@@ -203,10 +237,12 @@ export default function ScratchpadPage() {
     return unsubscribe;
   }, [sessionKeys, deviceId, yjsInitialized]);
 
-  async function handleTextChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
+  function handleTextChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     const newText = e.target.value;
-    await setYjsTextContent(newText);
-    // Yjs will trigger observer, which updates state
+    // Update React state immediately so the controlled textarea stays responsive
+    setText(newText);
+    // Then update Yjs (async) — Yjs observer will also call setText, but with the same value
+    setYjsTextContent(newText);
   }
 
   if (!cryptoInitialized) {

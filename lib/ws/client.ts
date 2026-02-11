@@ -968,7 +968,9 @@ export class WebSocketClient {
           break;
         case 'scratchpad_sync': {
           // Direct scratchpad relay - dispatch to event handlers as synthetic event
+          console.log('[ScratchpadSync:WS] Received scratchpad_sync from server');
           const spPayload = message.payload as { encrypted_payload: string; device_id: string };
+          console.log('[ScratchpadSync:WS] has encrypted_payload:', !!spPayload?.encrypted_payload, 'device_id:', spPayload?.device_id);
           if (spPayload?.encrypted_payload && spPayload?.device_id) {
             const syntheticEvent = {
               type: 'scratchpad:op',
@@ -980,9 +982,12 @@ export class WebSocketClient {
               stream_id: 'scratchpad:main',
               stream_seq: 0,
             } as EncryptedEvent;
+            console.log('[ScratchpadSync:WS] Dispatching to', this.eventHandlers.length, 'event handlers');
             this.eventHandlers.forEach(handler => {
               try { handler(syntheticEvent); } catch (e) { logger.error('Event handler error', e); }
             });
+          } else {
+            console.warn('[ScratchpadSync:WS] Missing payload fields, dropping');
           }
           break;
         }
