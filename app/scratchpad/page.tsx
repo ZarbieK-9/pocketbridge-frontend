@@ -17,6 +17,8 @@ import {
   getYjsText,
   setYjsTextContent,
   sendYjsUpdate,
+  sendFullState,
+  saveYjsState,
   receiveYjsUpdate,
   loadYjsState,
   rebuildYjsFromEvents,
@@ -130,10 +132,13 @@ export default function ScratchpadPage() {
   useEffect(() => {
     if (!sessionKeys || !yjsInitialized) return;
 
-    let unsubscribe: (() => void) | null = null;
+    let cancelled = false;
 
     async function setupSync() {
-      unsubscribe = await onYjsUpdate(async (update) => {
+      // Register the Yjs update listener
+      const unsub = await onYjsUpdate(async (update) => {
+        // Always persist locally, regardless of send outcome
+        await saveYjsState();
         try {
           setSyncStatus('sending');
           await sendYjsUpdate(update);
@@ -144,15 +149,27 @@ export default function ScratchpadPage() {
           setSyncStatus('error');
         }
       });
-      unsubscribeRef.current = unsubscribe;
+
+      // Guard: if effect was cleaned up while we were awaiting, remove the listener immediately
+      if (cancelled) {
+        unsub();
+        return;
+      }
+      unsubscribeRef.current = unsub;
+
+      // Send the full Yjs document state so the other device gets all existing content
+      try {
+        await sendFullState();
+      } catch (error) {
+        // Non-fatal: incremental updates will still work
+        logger.warn('[Scratchpad] Failed to send full state on connect:', { error: error instanceof Error ? error.message : String(error) });
+      }
     }
 
     setupSync();
 
     return () => {
-      if (unsubscribe) {
-        unsubscribe();
-      }
+      cancelled = true;
       if (unsubscribeRef.current) {
         unsubscribeRef.current();
         unsubscribeRef.current = null;

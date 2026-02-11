@@ -344,8 +344,25 @@ export default function FilesPage() {
     return () => unsubs.forEach((fn) => fn());
   }, [deviceId]);
 
+  // Track processed signal event IDs to ignore retransmissions from gap recovery
+  const processedSignalIds = new Set<string>();
+
   // Handle incoming WebRTC signaling events
   async function handleWebRTCSignal(event: any) {
+    // Deduplicate: skip events we've already processed (e.g. gap recovery retransmissions)
+    if (event.event_id && processedSignalIds.has(event.event_id)) {
+      console.log('[WebRTC] Ignoring duplicate signal event:', event.event_id);
+      return;
+    }
+    if (event.event_id) {
+      processedSignalIds.add(event.event_id);
+      // Cap the set size to prevent unbounded growth
+      if (processedSignalIds.size > 200) {
+        const first = processedSignalIds.values().next().value;
+        if (first !== undefined) processedSignalIds.delete(first);
+      }
+    }
+
     try {
       const { decryptPayload } = await import('@/lib/crypto/encryption');
       const { getSharedEncryptionKey } = await import('@/lib/crypto/shared-key');

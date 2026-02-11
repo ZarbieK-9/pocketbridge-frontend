@@ -328,6 +328,13 @@ export async function handleWebRTCOffer(
   offer: RTCSessionDescriptionInit,
   metadata: { fileName: string; fileSize: number; mimeType: string; totalChunks: number },
 ): Promise<void> {
+  // Guard against duplicate offers (e.g. from gap recovery retransmission)
+  const existing = activeTransfers.get(fileId);
+  if (existing?.peerConnection) {
+    console.warn('[WebRTC] Ignoring duplicate offer for fileId:', fileId);
+    return;
+  }
+
   const deviceId = getOrCreateDeviceId();
 
   const transfer: WebRTCFileTransfer = {
@@ -477,6 +484,12 @@ export async function handleWebRTCAnswer(
   const transfer = activeTransfers.get(fileId);
   if (!transfer?.peerConnection) {
     console.error('[WebRTC] No active transfer found for answer');
+    return;
+  }
+
+  // Guard against duplicate answers (e.g. from gap recovery retransmission)
+  if (transfer.peerConnection.signalingState !== 'have-local-offer') {
+    console.warn('[WebRTC] Ignoring duplicate answer, signalingState:', transfer.peerConnection.signalingState);
     return;
   }
 

@@ -113,12 +113,15 @@ export async function loadYjsState(): Promise<string | null> {
 /**
  * Send Yjs update directly via WebSocket
  * Bypasses event queue — no device_seq, no IndexedDB, no ACKs
+ *
+ * Throws on failure so caller can distinguish success from failure.
+ * Local persistence (saveYjsState) is handled separately by the caller
+ * so state is saved even when the network send fails.
  */
 export async function sendYjsUpdate(update: Uint8Array): Promise<void> {
   const sharedKey = await getSharedEncryptionKey();
   if (!sharedKey) {
-    console.error('[Scratchpad] Shared encryption key not available for send');
-    return;
+    throw new Error('Shared encryption key not available');
   }
 
   const payload: ScratchpadUpdatePayload = {
@@ -150,9 +153,6 @@ export async function sendYjsUpdate(update: Uint8Array): Promise<void> {
       device_id: deviceId,
     },
   });
-
-  // Persist state locally after each send
-  await saveYjsState();
 }
 
 /**
@@ -260,10 +260,24 @@ export async function rebuildYjsFromEvents(): Promise<string> {
 }
 
 /**
+ * Send the full Yjs document state to other devices.
+ * Used on initial connection so the remote device gets all content,
+ * not just incremental updates from new keystrokes.
+ */
+export async function sendFullState(): Promise<void> {
+  if (!yjsDoc) return;
+  const Yjs = await getYjs();
+  const state = Yjs.encodeStateAsUpdate(yjsDoc);
+  if (state.length > 0) {
+    await sendYjsUpdate(state);
+  }
+}
+
+/**
  * Listen for Yjs updates and send them
  */
 export async function onYjsUpdate(
-  callback: (update: Uint8Array) => void
+  callback: (update: Uint8Array) => Promise<void> | void
 ): Promise<() => void> {
   if (!yjsDoc) {
     await initYjsDoc();
@@ -274,6 +288,7 @@ export async function onYjsUpdate(
     if (origin !== 'local') {
       return;
     }
+    // Call the (possibly async) callback — errors handled by caller's try/catch
     callback(update);
   };
 
