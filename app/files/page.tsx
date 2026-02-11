@@ -48,6 +48,7 @@ import {
   markUploadFailed,
   getIncompleteUploads,
   getFailedUploads,
+  getUnsentChunks,
 } from '@/lib/features/file-upload-tracker';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { checkRateLimit } from '@/lib/utils/rate-limit';
@@ -201,7 +202,95 @@ export default function FilesPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cryptoInitialized, resetChunkTimeout]);
 
-  // Send resume requests when WebSocket connects and there are incomplete transfers
+  // Resume incomplete uploads when reconnecting (sender side)
+  useEffect(() => {
+    async function resumeIncompleteUploads() {
+      if (!isConnected) return;
+
+      try {
+        const incompleteUploads = await getIncompleteUploads();
+        if (incompleteUploads.length === 0) return;
+
+        logger.info('Found incomplete uploads to resume', { count: incompleteUploads.length });
+
+        for (const upload of incompleteUploads) {
+          // Determine which chunks still need to be sent
+          const unsentChunks = getUnsentChunks(upload);
+
+          if (unsentChunks.length === 0) {
+            logger.debug('Upload has no unsent chunks, skipping', { fileId: upload.fileId });
+            continue;
+          }
+
+          logger.info('Resuming upload', {
+            fileId: upload.fileId,
+            name: upload.name,
+            unsentCount: unsentChunks.length,
+            totalChunks: upload.totalChunks,
+          });
+
+          // Create a fake upload object for resumption
+          const { importAESKey } = await import('@/lib/crypto/keys');
+          const { uploadFileChunk } = await import('@/lib/features/files');
+          const { markChunkSent } = await import('@/lib/features/file-upload-tracker');
+
+          const encryptionKeyBytes = Uint8Array.from(atob(upload.encryptionKeyBase64), c => c.charCodeAt(0));
+          const fileEncryptionKey = await importAESKey(encryptionKeyBytes);
+
+          const fakeUpload = {
+            fileId: upload.fileId,
+            name: upload.name,
+            size: upload.size,
+            mimeType: upload.mimeType,
+            totalChunks: upload.totalChunks,
+            encryptionKey: fileEncryptionKey,
+            uploadedChunks: new Set(upload.sentChunks),
+          };
+
+          // Resend each unsent chunk
+          for (const chunkIndex of unsentChunks) {
+            try {
+              const { getUploadChunk } = await import('@/lib/features/file-upload-tracker');
+              const chunkRecord = await getUploadChunk(upload.fileId, chunkIndex);
+
+              if (!chunkRecord) {
+                logger.warn('Chunk data missing for resume', { fileId: upload.fileId, chunkIndex });
+                continue;
+              }
+
+              await uploadFileChunk(fakeUpload, chunkIndex, chunkRecord.data);
+              await markChunkSent(upload.fileId, chunkIndex);
+
+              logger.debug('Resumed chunk upload', { fileId: upload.fileId, chunkIndex });
+            } catch (error) {
+              logger.error('Failed to resume chunk', error, { fileId: upload.fileId, chunkIndex });
+            }
+          }
+
+          // Show progress in UI
+          const progress = (upload.sentChunks.length / upload.totalChunks) * 100;
+          setTransfers(prev => [...prev, {
+            fileId: upload.fileId,
+            name: upload.name,
+            size: upload.size,
+            progress,
+            status: 'uploading',
+            direction: 'sending',
+          }]);
+
+          toast(`Resuming upload: ${upload.name}`, 'info');
+        }
+      } catch (error) {
+        logger.error('Failed to resume incomplete uploads', error);
+      }
+    }
+
+    if (isConnected && cryptoInitialized) {
+      resumeIncompleteUploads();
+    }
+  }, [isConnected, cryptoInitialized]);
+
+  // Send resume requests when WebSocket connects and there are incomplete transfers (receiver side)
   useEffect(() => {
     async function requestMissingChunks() {
       if (!isConnected) return;

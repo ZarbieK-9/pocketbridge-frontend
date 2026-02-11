@@ -11,7 +11,7 @@
 import { logger } from '@/lib/utils/logger';
 
 const DB_NAME = 'pocketbridge_file_uploads';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // Incremented to trigger IndexedDB migration on existing databases
 const UPLOADS_STORE = 'uploads';
 const UPLOAD_CHUNKS_STORE = 'upload_chunks';
 
