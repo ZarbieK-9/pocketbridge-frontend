@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { OnboardingFlow } from '@/components/onboarding/onboarding-flow';
+import { PocketBridgeLogo } from '@/components/ui/logo';
 import { useCrypto } from '@/hooks/use-crypto';
 import { getOrCreateDeviceName } from '@/lib/utils/device';
 import { getOrCreateUserProfile } from '@/lib/utils/user-profile';
@@ -92,10 +93,19 @@ export default function OnboardingPage() {
   // Prevent hydration mismatch by not rendering until mounted
   if (!isMounted || isLoading || !isInitialized || !identityKeyPair) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center space-y-4">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
-          <p className="text-muted-foreground">Initializing...</p>
+      <div className="min-h-screen flex items-center justify-center bg-linear-to-b from-background to-blue-50/50 dark:to-blue-950/20">
+        <div className="text-center space-y-5 animate-in fade-in duration-500">
+          <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full bg-blue-50 dark:bg-blue-950/40">
+            <PocketBridgeLogo size={64} />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-semibold text-foreground">PocketBridge</h2>
+            <div className="flex items-center justify-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+              <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse [animation-delay:200ms]" />
+              <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse [animation-delay:400ms]" />
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -119,7 +129,7 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6 bg-muted/30">
+    <div className="min-h-screen flex items-center justify-center p-6 bg-linear-to-b from-background to-blue-50/50 dark:to-blue-950/20">
       <OnboardingFlow
         userId={identityKeyPair.publicKeyHex}
         currentDeviceName={deviceName}

@@ -2,12 +2,12 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { MainLayout } from '@/components/layout/main-layout';
-import { Header } from '@/components/layout/header';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { CheckCircle2, XCircle, KeyRound, Copy, Check, QrCode } from 'lucide-react';
+import { CheckCircle2, XCircle, KeyRound, Copy, Check, QrCode, Link2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { parsePairingCode, generatePairingCode, type PairingData } from '@/lib/utils/pairing-code';
 import { getBackendApiUrl } from '@/lib/utils/pairing-code';
 import { setWsUrl, getWsUrl, savePairedAccount } from '@/lib/utils/storage';
@@ -772,41 +772,33 @@ export default function PairPage() {
   if (!isInitialized) {
     return (
       <MainLayout>
-        <Header title="Pair Device" description="Initializing..." />
+        <div className="border-b border-border bg-linear-to-b from-violet-50/60 to-card dark:from-violet-950/20 dark:to-card">
+          <div className="px-6 py-5">
+            <h1 className="text-3xl font-bold tracking-tight text-foreground">Pair Device</h1>
+            <p className="mt-1 text-sm text-muted-foreground">Initializing...</p>
+          </div>
+        </div>
         <div className="p-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Initializing Cryptography</CardTitle>
-              <CardDescription>
-                Setting up encryption keys for secure communication...
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="pt-6 space-y-4">
-              <div className="flex items-center gap-2">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-primary"></div>
-                <p className="text-muted-foreground">Initializing cryptography...</p>
+          <div className="text-center space-y-4 py-12 animate-in fade-in duration-500">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-violet-50 dark:bg-violet-950/40 animate-pulse">
+              <Link2 className="h-8 w-8 text-violet-500" />
+            </div>
+            <p className="text-sm text-muted-foreground">Setting up encryption keys...</p>
+            {cryptoError && (
+              <div className="mt-4 mx-auto max-w-md rounded-2xl border border-red-200 dark:border-red-900/50 bg-red-50/80 dark:bg-red-950/20 p-4 text-left">
+                <p className="text-sm font-semibold text-red-800 dark:text-red-400 mb-2">Initialization Error</p>
+                <p className="text-sm text-red-700 dark:text-red-300">{cryptoError.message}</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-3"
+                  onClick={() => window.location.reload()}
+                >
+                  Reload Page
+                </Button>
               </div>
-              {cryptoError && (
-                <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded">
-                  <p className="text-sm font-semibold text-red-800 mb-2">Initialization Error</p>
-                  <p className="text-sm text-red-800">
-                    <strong>Error:</strong> {cryptoError.message}
-                  </p>
-                  <p className="text-xs text-red-600 mt-2">
-                    Check the browser console (F12) for more details. Look for logs starting with [useCrypto] or [initializeCrypto].
-                  </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-3"
-                    onClick={() => window.location.reload()}
-                  >
-                    Reload Page
-                  </Button>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+            )}
+          </div>
         </div>
       </MainLayout>
     );
@@ -814,11 +806,21 @@ export default function PairPage() {
 
   return (
     <MainLayout>
-      <Header title="Pair Device" description={mode === 'receive' ? 'Enter code from another device' : 'Share your pairing code'} />
+      {/* Gradient Header */}
+      <div className="border-b border-border bg-linear-to-b from-violet-50/60 to-card dark:from-violet-950/20 dark:to-card animate-in fade-in duration-400">
+        <div className="px-6 py-5">
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">Pair Device</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {mode === 'receive' ? 'Enter code from another device' : 'Share your pairing code'}
+          </p>
+        </div>
+      </div>
 
+      <div className="flex-1 overflow-y-auto">
       <div className="p-6 space-y-6">
         {/* Device Profile Section - Always Visible */}
-        <Card>
+        <div className="animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '100ms', animationFillMode: 'backwards' }}>
+        <Card className="rounded-2xl">
           <CardHeader>
             <CardTitle>Device Profile</CardTitle>
             <CardDescription>
@@ -969,25 +971,36 @@ export default function PairPage() {
             </div>
           </CardContent>
         </Card>
+        </div>
 
-        {/* Mode Toggle */}
-        <div className="flex gap-2 justify-center">
-          <Button
-            variant={mode === 'receive' ? 'default' : 'outline'}
-            onClick={() => setMode('receive')}
-            size="sm"
-            aria-label="Switch to receive mode"
-          >
-            Receive
-          </Button>
-          <Button
-            variant={mode === 'share' ? 'default' : 'outline'}
-            onClick={() => setMode('share')}
-            size="sm"
-            aria-label="Switch to share mode"
-          >
-            Share
-          </Button>
+        {/* Mode Toggle - Segmented Control */}
+        <div className="flex justify-center animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '150ms', animationFillMode: 'backwards' }}>
+          <div className="inline-flex rounded-xl bg-muted p-1">
+            <button
+              onClick={() => setMode('receive')}
+              aria-label="Switch to receive mode"
+              className={cn(
+                'rounded-lg px-6 py-2 text-sm font-medium transition-all',
+                mode === 'receive'
+                  ? 'bg-card text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Receive
+            </button>
+            <button
+              onClick={() => setMode('share')}
+              aria-label="Switch to share mode"
+              className={cn(
+                'rounded-lg px-6 py-2 text-sm font-medium transition-all',
+                mode === 'share'
+                  ? 'bg-card text-foreground shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              Share
+            </button>
+          </div>
         </div>
 
         {mode === 'receive' && (
@@ -1186,7 +1199,7 @@ export default function PairPage() {
           <>
             {/* QR Code */}
             {myQrCode && (
-              <Card className="text-center">
+              <Card className="text-center rounded-2xl">
                 <CardHeader>
                   <CardTitle>Scan QR Code</CardTitle>
                   <CardDescription>
@@ -1195,11 +1208,11 @@ export default function PairPage() {
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="flex justify-center">
-                    <div className="inline-block p-4 bg-white rounded-lg shadow-sm border">
+                    <div className="inline-block p-4 bg-white rounded-2xl shadow-md border">
                       <img
                         src={myQrCode}
                         alt="Pairing QR Code"
-                        className="block max-w-full h-auto"
+                        className="block max-w-full h-auto rounded-lg"
                       />
                     </div>
                   </div>
@@ -1209,7 +1222,7 @@ export default function PairPage() {
 
             {/* Pairing Code */}
             {myPairingCode && (
-              <Card className="text-center">
+              <Card className="text-center rounded-2xl">
                 <CardHeader>
                   <CardTitle>Pairing Code</CardTitle>
                   <CardDescription>
@@ -1218,15 +1231,15 @@ export default function PairPage() {
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="flex justify-center">
-                    <div className="inline-flex items-center gap-4 px-8 py-6 bg-primary/10 rounded-lg border-2 border-primary">
-                      <span className="text-5xl font-mono font-bold text-primary tracking-wider">
+                    <div className="inline-flex items-center gap-4 px-8 py-6 rounded-2xl bg-linear-to-br from-blue-50 to-violet-50 dark:from-blue-950/30 dark:to-violet-950/30 border-2 border-primary/30">
+                      <span className="text-5xl font-mono font-bold bg-linear-to-r from-[#007AFF] to-[#5856D6] bg-clip-text text-transparent tracking-wider">
                         {myPairingCode}
                       </span>
                       <Button
                         variant="ghost"
                         size="icon"
                         onClick={handleCopyCode}
-                        className="h-10 w-10"
+                        className="h-10 w-10 rounded-full"
                       >
                         {copied ? (
                           <Check className="h-5 w-5 text-green-600" />
@@ -1285,6 +1298,7 @@ export default function PairPage() {
             </p>
           </>
         )}
+      </div>
       </div>
     </MainLayout>
   );

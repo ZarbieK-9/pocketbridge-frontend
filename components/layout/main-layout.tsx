@@ -1,20 +1,27 @@
 import type React from "react";
 /**
- * Main layout wrapper with sidebar
+ * Main layout wrapper with collapsible sidebar
  */
 
 import { Sidebar } from "./sidebar"
+import { SidebarProvider, useSidebar } from "./sidebar-context"
+import { cn } from "@/lib/utils"
 
 interface MainLayoutProps {
   children: React.ReactNode
 }
 
-export function MainLayout({ children }: MainLayoutProps) {
+function MainContent({ children }: MainLayoutProps) {
+  const { isCollapsed } = useSidebar()
+
   return (
     <div className="min-h-screen bg-background">
       <Sidebar />
-      <main 
-        className="ml-64 min-h-screen"
+      <main
+        className={cn(
+          "h-screen transition-[margin] duration-300 ease-in-out",
+          isCollapsed ? "ml-16" : "ml-64"
+        )}
         role="main"
         aria-label="Main content"
         id="main-content"
@@ -37,5 +44,13 @@ export function MainLayout({ children }: MainLayoutProps) {
         Skip to main content
       </a>
     </div>
+  )
+}
+
+export function MainLayout({ children }: MainLayoutProps) {
+  return (
+    <SidebarProvider>
+      <MainContent>{children}</MainContent>
+    </SidebarProvider>
   )
 }

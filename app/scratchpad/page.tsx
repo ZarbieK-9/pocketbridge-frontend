@@ -27,13 +27,12 @@ import {
 } from '@/lib/features/scratchpad-yjs';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { getWebSocketClient } from '@/lib/ws';
-import { Card, CardContent } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
-import { StatusBadge } from '@/components/ui/status-badge';
-import { Save } from 'lucide-react';
+import { ShieldCheck, Cloud, CloudOff, RefreshCw, WifiOff, FileText } from 'lucide-react';
 import { config } from '@/lib/config';
 import { analytics } from '@/lib/utils/analytics';
-import { SyncIndicator } from '@/components/sync-indicator';
+import { cn } from '@/lib/utils';
+import { MainLayout } from '@/components/layout/main-layout';
 
 const WS_URL = config.wsUrl;
 
@@ -245,57 +244,85 @@ export default function ScratchpadPage() {
     setYjsTextContent(newText);
   }
 
+  function getSyncConfig() {
+    if (!isConnected) return { icon: CloudOff, label: 'Offline', color: 'text-red-500', bg: 'bg-red-50 dark:bg-red-950/40' };
+    if (isLoading) return { icon: RefreshCw, label: 'Loading...', color: 'text-muted-foreground', bg: 'bg-muted' };
+    if (syncStatus === 'sending') return { icon: RefreshCw, label: 'Syncing...', color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-950/40' };
+    if (syncStatus === 'synced') return { icon: Cloud, label: 'Synced', color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-950/40' };
+    if (syncStatus === 'error') return { icon: CloudOff, label: 'Error', color: 'text-red-500', bg: 'bg-red-50 dark:bg-red-950/40' };
+    return { icon: Cloud, label: 'Ready', color: 'text-muted-foreground', bg: 'bg-muted' };
+  }
+
+  const syncConfig = getSyncConfig();
+  const SyncIcon = syncConfig.icon;
+
   if (!cryptoInitialized) {
     return (
-      <div className="container mx-auto p-4 sm:p-6">
-        <Card className="p-6">
-          <p>Initializing cryptography...</p>
-        </Card>
-      </div>
+      <MainLayout>
+        <div className="flex h-full items-center justify-center">
+          <div className="text-center space-y-3 animate-in fade-in duration-500">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 dark:bg-emerald-950/40 animate-pulse">
+              <FileText className="h-8 w-8 text-emerald-500" />
+            </div>
+            <p className="text-sm text-muted-foreground">Initializing encryption...</p>
+          </div>
+        </div>
+      </MainLayout>
     );
   }
 
   return (
-    <div className="container mx-auto p-4 sm:p-6 space-y-3 sm:space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-        <h1 className="text-2xl sm:text-3xl font-bold">Live Scratchpad</h1>
-        <div className="flex items-center gap-2 sm:gap-3">
-          <SyncIndicator status={syncStatus} />
-          <StatusBadge status={isConnected ? 'online' : 'offline'} />
-          {lastSaved && (
-            <span className="text-xs sm:text-sm text-muted-foreground flex items-center gap-1">
-              <Save className="h-3 w-3 sm:h-4 sm:w-4" />
-              {lastSaved.toLocaleTimeString()}
-            </span>
-          )}
+    <MainLayout>
+    <div className="flex h-full flex-col">
+      {/* Gradient Header */}
+      <div className="border-b border-border bg-linear-to-b from-emerald-50/60 to-card dark:from-emerald-950/20 dark:to-card animate-in fade-in duration-400">
+        <div className="flex items-end justify-between px-6 py-4">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight text-foreground">Scratchpad</h1>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {text.length} characters · {isConnected ? 'Encrypted' : 'Offline'}
+            </p>
+          </div>
+          {/* Sync badge */}
+          <div className={cn('inline-flex items-center gap-1.5 rounded-full px-3 py-1.5', syncConfig.bg)}>
+            <SyncIcon className={cn('h-4 w-4', syncConfig.color, syncStatus === 'sending' && 'animate-spin')} />
+            <span className={cn('text-xs font-medium', syncConfig.color)}>{syncConfig.label}</span>
+          </div>
         </div>
       </div>
 
-      <Card className="border-none shadow-none">
-        <CardContent className="p-0">
-          {isLoading ? (
-            <div className="flex items-center justify-center min-h-[50vh] text-muted-foreground">
-              Loading scratchpad...
-            </div>
-          ) : (
-            <Textarea
-              ref={textareaRef}
-              value={text}
-              onChange={handleTextChange}
-              placeholder="Start typing... your notes sync in real-time across all devices"
-              className="min-h-[calc(100vh-14rem)] sm:min-h-[calc(100vh-12rem)] resize-none border-0 focus-visible:ring-0 font-mono text-sm"
-            />
-          )}
-        </CardContent>
-      </Card>
+      {/* Editor */}
+      {isLoading ? (
+        <div className="flex-1 p-6 space-y-3 animate-in fade-in duration-300">
+          <div className="h-4 w-3/4 rounded bg-muted animate-shimmer" />
+          <div className="h-4 w-full rounded bg-muted animate-shimmer" style={{ animationDelay: '100ms' }} />
+          <div className="h-4 w-5/6 rounded bg-muted animate-shimmer" style={{ animationDelay: '200ms' }} />
+          <div className="h-4 w-2/3 rounded bg-muted animate-shimmer" style={{ animationDelay: '300ms' }} />
+          <div className="h-4 w-full rounded bg-muted animate-shimmer" style={{ animationDelay: '400ms' }} />
+          <div className="h-4 w-1/2 rounded bg-muted animate-shimmer" style={{ animationDelay: '500ms' }} />
+        </div>
+      ) : (
+        <div className="flex-1 animate-in fade-in duration-400" style={{ animationDelay: '100ms' }}>
+          <Textarea
+            ref={textareaRef}
+            value={text}
+            onChange={handleTextChange}
+            placeholder="Start typing... your notes sync in real-time across all devices"
+            className="h-full min-h-0 resize-none rounded-none border-0 focus-visible:ring-0 font-mono text-sm px-6 py-4"
+          />
+        </div>
+      )}
 
-      <div className="text-xs sm:text-sm text-muted-foreground">
-        <p>
-          {isConnected
-            ? 'Connected. Changes sync automatically using Yjs CRDT.'
-            : 'Offline. Changes will sync when reconnected.'}
-        </p>
-      </div>
+      {/* Offline notice */}
+      {!isConnected && !isLoading && (
+        <div className="flex items-center gap-2 border-t border-red-200 dark:border-red-900 bg-red-50/80 dark:bg-red-950/20 px-6 py-3 animate-in fade-in duration-300">
+          <WifiOff className="h-4 w-4 text-red-500" />
+          <span className="text-xs text-red-600 dark:text-red-400">
+            Connect to server to enable real-time sync
+          </span>
+        </div>
+      )}
     </div>
+    </MainLayout>
   );
 }

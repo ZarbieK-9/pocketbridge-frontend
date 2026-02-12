@@ -12,6 +12,7 @@ import { useRouter, usePathname } from 'next/navigation';
 import { useCrypto } from '@/hooks/use-crypto';
 import { getOrCreateUserProfile } from '@/lib/utils/user-profile';
 import { logger } from '@/lib/utils/logger';
+import { PocketBridgeLogo } from '@/components/ui/logo';
 
 interface OnboardingGuardProps {
   children: React.ReactNode;
@@ -114,10 +115,15 @@ export function OnboardingGuard({ children }: OnboardingGuardProps) {
   // Show loading state while checking (only after client mount)
   if (isChecking && !publicRoutes.includes(pathname)) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center space-y-4">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
-          <p className="text-muted-foreground">Loading...</p>
+      <div className="min-h-screen flex items-center justify-center bg-linear-to-b from-background to-blue-50/50 dark:to-blue-950/20">
+        <div className="text-center space-y-5 animate-in fade-in duration-500">
+          <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-full bg-blue-50 dark:bg-blue-950/40 animate-pulse">
+            <PocketBridgeLogo size={64} />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-semibold text-foreground">PocketBridge</h2>
+            <p className="text-sm text-muted-foreground">Loading your workspace...</p>
+          </div>
         </div>
       </div>
     );

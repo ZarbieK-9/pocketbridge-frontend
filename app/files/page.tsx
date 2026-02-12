@@ -64,14 +64,13 @@ import {
   onTransferEvent,
   type WebRTCFileTransfer,
 } from '@/lib/features/webrtc-transfer';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { StatusBadge } from '@/components/ui/status-badge';
-import { Upload, FileIcon } from 'lucide-react';
+import { Upload, FileIcon, FolderOpen, ShieldCheck, CheckCircle2, XCircle, ArrowUpCircle, ArrowDownCircle, X, RefreshCw } from 'lucide-react';
 import { Progress } from '@/components/ui/progress';
 import { config } from '@/lib/config';
-import { SyncIndicator } from '@/components/sync-indicator';
 import { toast } from '@/components/ui/toast';
+import { cn } from '@/lib/utils';
+import { MainLayout } from '@/components/layout/main-layout';
 
 const WS_URL = config.wsUrl;
 
@@ -1347,204 +1346,247 @@ export default function FilesPage() {
     return `${(bytesPerSecond / (1024 * 1024 * 1024)).toFixed(2)} GB/s`;
   }
 
+  function getStatusConfig(status: string, direction: string) {
+    switch (status) {
+      case 'completed':
+        return { icon: CheckCircle2, color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-950/40', label: direction === 'sending' ? 'Sent' : 'Received' };
+      case 'error':
+        return { icon: XCircle, color: 'text-red-500', bg: 'bg-red-50 dark:bg-red-950/40', label: 'Failed' };
+      case 'uploading':
+        return direction === 'sending'
+          ? { icon: ArrowUpCircle, color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-950/40', label: 'Sending...' }
+          : { icon: ArrowDownCircle, color: 'text-violet-500', bg: 'bg-violet-50 dark:bg-violet-950/40', label: 'Receiving...' };
+      default:
+        return { icon: FileIcon, color: 'text-muted-foreground', bg: 'bg-muted', label: 'Pending' };
+    }
+  }
+
   if (!cryptoInitialized) {
     return (
-      <div className="container mx-auto p-6">
-        <Card className="p-6">
-          <p>Initializing cryptography...</p>
-        </Card>
-      </div>
+      <MainLayout>
+        <div className="flex h-full items-center justify-center">
+          <div className="text-center space-y-3 animate-in fade-in duration-500">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-blue-50 dark:bg-blue-950/40 animate-pulse">
+              <FolderOpen className="h-8 w-8 text-blue-500" />
+            </div>
+            <p className="text-sm text-muted-foreground">Initializing encryption...</p>
+          </div>
+        </div>
+      </MainLayout>
     );
   }
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold">File Beaming</h1>
-        <div className="flex items-center gap-3">
-          <SyncIndicator status={syncStatus} />
-          <StatusBadge status={isConnected ? 'online' : 'offline'} />
+    <MainLayout>
+    <div className="flex h-full flex-col">
+      {/* Gradient Header */}
+      <div className="border-b border-border bg-linear-to-b from-blue-50/60 to-card dark:from-blue-950/20 dark:to-card animate-in fade-in duration-400">
+        <div className="flex items-end justify-between px-6 py-4">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight text-foreground">Files</h1>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {transfers.length + fileHistory.length} transfer{transfers.length + fileHistory.length !== 1 ? 's' : ''}
+              {isConnected ? ' · Secure' : ''}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={cn(
+              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+              isConnected
+                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400'
+                : 'bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-400'
+            )}>
+              <ShieldCheck className="h-3 w-3" />
+              {isConnected ? 'Encrypted' : 'Offline'}
+            </span>
+          </div>
         </div>
       </div>
 
-      {/* Upload Area */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Send File</CardTitle>
-          <CardDescription>Upload a file to beam it to your other devices (max {(MAX_FILE_SIZE / 1024 / 1024 / 1024).toFixed(1)}GB)</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <input
-            ref={fileInputRef}
-            type="file"
-            onChange={handleFileSelect}
-            className="hidden"
-            disabled={!isConnected}
-            aria-label="Select file to upload"
-          />
-          <div
-            onClick={() => fileInputRef.current?.click()}
-            className="rounded-lg border-2 border-dashed border-border bg-muted/20 p-12 text-center transition-colors hover:border-primary/50 hover:bg-primary/5 cursor-pointer"
-          >
-            <Upload className="mx-auto h-12 w-12 text-muted-foreground" />
-            <p className="mt-4 text-sm font-medium">Drag and drop files here</p>
-            <p className="mt-2 text-xs text-muted-foreground">or click to browse (max {(MAX_FILE_SIZE / 1024 / 1024 / 1024).toFixed(1)}GB)</p>
-            <Button
-              className="mt-4"
-              variant="outline"
+      <div className="flex-1 overflow-y-auto">
+        <div className="p-6 space-y-6">
+          {/* Upload Area */}
+          <div className="animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '100ms', animationFillMode: 'backwards' }}>
+            <input
+              ref={fileInputRef}
+              type="file"
+              onChange={handleFileSelect}
+              className="hidden"
               disabled={!isConnected}
-              onClick={(e) => {
-                e.stopPropagation();
-                fileInputRef.current?.click();
-              }}
+              aria-label="Select file to upload"
+            />
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              className="rounded-2xl border-2 border-dashed border-border bg-linear-to-br from-blue-50/30 to-violet-50/30 dark:from-blue-950/10 dark:to-violet-950/10 p-10 text-center transition-colors hover:border-primary/50 hover:from-blue-50/60 hover:to-violet-50/60 dark:hover:from-blue-950/20 dark:hover:to-violet-950/20 cursor-pointer"
             >
-              Choose File
-            </Button>
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-linear-to-br from-[#007AFF] to-[#5856D6]">
+                <Upload className="h-6 w-6 text-white" />
+              </div>
+              <p className="mt-4 text-sm font-semibold text-foreground">Send a File</p>
+              <p className="mt-1 text-xs text-muted-foreground">Drag and drop or click to browse (max {(MAX_FILE_SIZE / 1024 / 1024 / 1024).toFixed(1)}GB)</p>
+              <Button
+                className="mt-4 rounded-xl"
+                variant="outline"
+                disabled={!isConnected}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
+              >
+                Choose File
+              </Button>
+            </div>
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Active Transfers */}
-      {transfers.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Active Transfers</CardTitle>
-            <CardDescription>Files currently being transferred</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {transfers.map((transfer) => (
-                <div key={transfer.fileId} className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <FileIcon className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm font-medium">{transfer.name}</span>
-                      <span className="text-xs text-muted-foreground">
-                        ({formatFileSize(transfer.size)})
-                      </span>
-                    </div>
-                    <StatusBadge
-                      status={
-                        transfer.status === 'completed'
-                          ? 'online'
-                          : transfer.status === 'error'
-                          ? 'error'
-                          : 'syncing'
-                      }
-                      label={
-                        transfer.status === 'completed'
-                          ? (transfer.direction === 'sending' ? 'Sent' : 'Received')
-                          : transfer.status === 'error'
-                          ? 'Failed'
-                          : (transfer.direction === 'sending' ? 'Sending...' : 'Receiving...')
-                      }
-                    />
-                  </div>
-                  {transfer.status === 'uploading' && (
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-xs text-muted-foreground">
-                        <span>
-                          {transfer.direction === 'sending' ? 'Uploading' : 'Downloading'}
-                          {transfer.speed ? ` • ${formatSpeed(transfer.speed)}` : ''}
-                        </span>
-                        <span>{Math.round(transfer.progress)}%</span>
+          {/* Active Transfers */}
+          {transfers.length > 0 && (
+            <div className="animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '200ms', animationFillMode: 'backwards' }}>
+              <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Active Transfers</h2>
+              <div className="rounded-2xl border border-border bg-card overflow-hidden">
+                {transfers.map((transfer, idx) => {
+                  const cfg = getStatusConfig(transfer.status, transfer.direction);
+                  const StatusIcon = cfg.icon;
+                  return (
+                    <div key={transfer.fileId}>
+                      {idx > 0 && <div className="mx-4 h-px bg-border" />}
+                      <div className="flex items-center gap-3.5 px-4 py-3">
+                        <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-xl', cfg.bg)}>
+                          <StatusIcon className={cn('h-5 w-5', cfg.color)} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-foreground">{transfer.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatFileSize(transfer.size)}
+                            {transfer.speed ? ` · ${formatSpeed(transfer.speed)}` : ''}
+                          </p>
+                          {transfer.status === 'uploading' && (
+                            <div className="mt-1.5 space-y-0.5">
+                              <Progress value={transfer.progress} className="h-1.5" />
+                              <p className="text-[10px] text-muted-foreground text-right">{Math.round(transfer.progress)}%</p>
+                            </div>
+                          )}
+                          {transfer.status === 'error' && transfer.failReason && (
+                            <p className="mt-0.5 text-xs text-red-500">{transfer.failReason}</p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <span className={cn('text-xs font-medium', cfg.color)}>{cfg.label}</span>
+                          {transfer.status === 'error' && (
+                            <button
+                              className="ml-1 rounded-full p-1 hover:bg-muted"
+                              onClick={async () => {
+                                await deleteTransfer(transfer.fileId);
+                                setTransfers(prev => prev.filter(t => t.fileId !== transfer.fileId));
+                              }}
+                            >
+                              <X className="h-3.5 w-3.5 text-muted-foreground" />
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <Progress value={transfer.progress} className="h-2" />
                     </div>
-                  )}
-                  {transfer.status === 'error' && (
-                    <div className="flex items-center justify-between">
-                      <p className="text-xs text-destructive">{transfer.failReason || 'Transfer failed'}</p>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 text-xs"
-                        onClick={async () => {
-                          await deleteTransfer(transfer.fileId);
-                          setTransfers(prev => prev.filter(t => t.fileId !== transfer.fileId));
-                        }}
-                      >
-                        Dismiss
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* File History */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Transfer History</CardTitle>
-          <CardDescription>Recently sent and received files</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {historyLoading ? (
-            <div className="flex items-center justify-center p-8">
-              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-              <span className="ml-2 text-sm text-muted-foreground">Loading history...</span>
-            </div>
-          ) : fileHistory.length === 0 ? (
-            <div className="rounded-lg border border-dashed border-border p-8 text-center">
-              <FileIcon className="mx-auto h-8 w-8 text-muted-foreground" />
-              <p className="mt-4 text-sm text-muted-foreground">No file history</p>
-              <p className="mt-2 text-xs text-muted-foreground">Transferred files will appear here</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {fileHistory.map((file) => (
-                <div
-                  key={file.eventId}
-                  className={`flex items-center justify-between p-3 rounded-lg ${file.status === 'failed' ? 'bg-destructive/10' : 'bg-muted/50'}`}
-                >
-                  <div className="flex items-center gap-3">
-                    <FileIcon className={`h-5 w-5 ${file.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`} />
-                    <div>
-                      <p className="text-sm font-medium">{file.name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {formatFileSize(file.size)} • {file.createdAt.toLocaleDateString()} {file.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </p>
-                      {file.status === 'failed' && file.failReason && (
-                        <p className="text-xs text-destructive mt-0.5">{file.failReason}</p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {file.status === 'failed' ? (
-                      <>
-                        <span className="text-xs text-destructive font-medium">Failed</span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 text-xs"
-                          onClick={async () => {
-                            // Delete from the correct IndexedDB store
-                            if (file.eventId.startsWith('failed-send-')) {
-                              await deleteUpload(file.fileId);
-                            } else {
-                              await deleteTransfer(file.fileId);
-                            }
-                            setFileHistory(prev => prev.filter(f => f.eventId !== file.eventId));
-                          }}
-                        >
-                          Dismiss
-                        </Button>
-                      </>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">
-                        {file.deviceId === deviceId ? 'Sent' : 'Received'}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
+                  );
+                })}
+              </div>
             </div>
           )}
-        </CardContent>
-      </Card>
+
+          {/* File History */}
+          <div className="animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '300ms', animationFillMode: 'backwards' }}>
+            <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Transfer History</h2>
+            {historyLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => (
+                  <div key={i} className="flex items-center gap-3.5 rounded-2xl border border-border bg-card px-4 py-3">
+                    <div className="h-10 w-10 rounded-xl bg-muted animate-shimmer" />
+                    <div className="flex-1 space-y-2">
+                      <div className="h-3.5 w-2/3 rounded bg-muted animate-shimmer" />
+                      <div className="h-3 w-1/3 rounded bg-muted animate-shimmer" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : fileHistory.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-border p-10 text-center">
+                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-muted/50">
+                  <FolderOpen className="h-8 w-8 text-muted-foreground/50" />
+                </div>
+                <p className="mt-4 text-sm font-medium text-muted-foreground">No file transfers</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Send files securely to your paired devices
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-border bg-card overflow-hidden">
+                {fileHistory.map((file, idx) => {
+                  const isFailed = file.status === 'failed';
+                  const isSent = file.deviceId === deviceId;
+                  return (
+                    <div key={file.eventId}>
+                      {idx > 0 && <div className="mx-4 h-px bg-border" />}
+                      <div className="flex items-center gap-3.5 px-4 py-3">
+                        <div className={cn(
+                          'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl',
+                          isFailed
+                            ? 'bg-red-50 dark:bg-red-950/40'
+                            : isSent
+                              ? 'bg-blue-50 dark:bg-blue-950/40'
+                              : 'bg-emerald-50 dark:bg-emerald-950/40'
+                        )}>
+                          {isFailed ? (
+                            <XCircle className="h-5 w-5 text-red-500" />
+                          ) : isSent ? (
+                            <ArrowUpCircle className="h-5 w-5 text-blue-500" />
+                          ) : (
+                            <ArrowDownCircle className="h-5 w-5 text-emerald-500" />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-foreground">{file.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatFileSize(file.size)} · {file.createdAt.toLocaleDateString()} {file.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </p>
+                          {isFailed && file.failReason && (
+                            <p className="mt-0.5 text-xs text-red-500">{file.failReason}</p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {isFailed ? (
+                            <>
+                              <span className="text-xs font-medium text-red-500">Failed</span>
+                              <button
+                                className="ml-1 rounded-full p-1 hover:bg-muted"
+                                onClick={async () => {
+                                  if (file.eventId.startsWith('failed-send-')) {
+                                    await deleteUpload(file.fileId);
+                                  } else {
+                                    await deleteTransfer(file.fileId);
+                                  }
+                                  setFileHistory(prev => prev.filter(f => f.eventId !== file.eventId));
+                                }}
+                              >
+                                <X className="h-3.5 w-3.5 text-muted-foreground" />
+                              </button>
+                            </>
+                          ) : (
+                            <span className={cn(
+                              'text-xs font-medium',
+                              isSent ? 'text-blue-500' : 'text-emerald-500'
+                            )}>
+                              {isSent ? 'Sent' : 'Received'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
+    </MainLayout>
   );
 }

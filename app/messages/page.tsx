@@ -8,7 +8,7 @@
  * and browser notification support for incoming messages.
  */
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { useCrypto } from '@/hooks/use-crypto';
 import { useNotifications } from '@/hooks/use-notifications';
@@ -22,7 +22,7 @@ import { getOrCreateDeviceId } from '@/lib/utils/device';
 import { loadPairedAccount } from '@/lib/utils/storage';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { Button } from '@/components/ui/button';
-import { Send, Bell, BellOff, ShieldCheck, MessageSquareLock } from 'lucide-react';
+import { Send, Bell, BellOff, ShieldCheck, MessageSquareLock, CheckCheck, ArrowUp } from 'lucide-react';
 import { validateMessageText } from '@/lib/utils/validation';
 import { checkRateLimit } from '@/lib/utils/rate-limit';
 import { config } from '@/lib/config';
@@ -32,9 +32,35 @@ import { analytics } from '@/lib/utils/analytics';
 import { SyncIndicator } from '@/components/sync-indicator';
 import { toast } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
+import { MainLayout } from '@/components/layout/main-layout';
 import type { EncryptedEvent } from '@/types';
 
 const WS_URL = config.wsUrl;
+
+function groupMessagesByDate(messages: ChatMessage[]) {
+  const groups: { label: string; messages: ChatMessage[] }[] = [];
+  let currentLabel = '';
+
+  for (const msg of messages) {
+    const date = new Date(msg.timestamp);
+    const now = new Date();
+    const diffDays = Math.floor((now.getTime() - date.getTime()) / 86400000);
+
+    let label: string;
+    if (diffDays === 0) label = 'Today';
+    else if (diffDays === 1) label = 'Yesterday';
+    else if (diffDays < 7) label = date.toLocaleDateString(undefined, { weekday: 'long' });
+    else label = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+    if (label !== currentLabel) {
+      groups.push({ label, messages: [msg] });
+      currentLabel = label;
+    } else {
+      groups[groups.length - 1].messages.push(msg);
+    }
+  }
+  return groups;
+}
 
 export default function SecretChatPage() {
   const deviceId = getOrCreateDeviceId();
@@ -186,107 +212,175 @@ export default function SecretChatPage() {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
+  const messageGroups = useMemo(() => groupMessagesByDate(messages), [messages]);
+
   if (!cryptoInitialized) {
     return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-muted-foreground">Initializing encryption...</p>
-      </div>
+      <MainLayout>
+        <div className="flex h-full items-center justify-center">
+          <div className="text-center space-y-3 animate-in fade-in duration-500">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-blue-50 dark:bg-blue-950/40 animate-pulse">
+              <MessageSquareLock className="h-8 w-8 text-blue-500" />
+            </div>
+            <p className="text-sm text-muted-foreground">Initializing encryption...</p>
+          </div>
+        </div>
+      </MainLayout>
     );
   }
 
   return (
+    <MainLayout>
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border px-6 py-3">
-        <div className="flex items-center gap-3">
-          <MessageSquareLock className="h-5 w-5 text-primary" />
-          <div>
-            <h1 className="text-lg font-semibold">Secret Chat</h1>
-            <p className="text-xs text-muted-foreground flex items-center gap-1">
-              <ShieldCheck className="h-3 w-3" />
-              End-to-end encrypted
-            </p>
+      {/* Gradient Header */}
+      <div className="border-b border-border bg-linear-to-b from-blue-50/60 to-card dark:from-blue-950/20 dark:to-card animate-in fade-in duration-400">
+        <div className="flex items-center justify-between px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-linear-to-br from-[#007AFF] to-[#5856D6]">
+              <MessageSquareLock className="h-5 w-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">Secret Chat</h1>
+              <div className="mt-0.5 flex items-center gap-3">
+                <span className={cn(
+                  'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium',
+                  isConnected
+                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400'
+                    : 'bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-400'
+                )}>
+                  <ShieldCheck className="h-3 w-3" />
+                  {isConnected ? 'Encrypted' : 'Offline'}
+                </span>
+                {messages.length > 0 && (
+                  <span className="text-[11px] text-muted-foreground">
+                    {messages.length} message{messages.length !== 1 ? 's' : ''}
+                  </span>
+                )}
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {notificationsSupported && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={async () => {
-                if (notificationPermission === 'default') {
-                  await requestPermission();
-                } else if (notificationPermission === 'granted') {
-                  await setNotificationsEnabled(!notificationsEnabled);
+          <div className="flex items-center gap-1.5">
+            {notificationsSupported && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9 w-9 rounded-full"
+                onClick={async () => {
+                  if (notificationPermission === 'default') {
+                    await requestPermission();
+                  } else if (notificationPermission === 'granted') {
+                    await setNotificationsEnabled(!notificationsEnabled);
+                  }
+                }}
+                title={
+                  notificationPermission === 'denied'
+                    ? 'Notifications blocked in browser settings'
+                    : notificationsEnabled
+                    ? 'Disable notifications'
+                    : 'Enable notifications'
                 }
-              }}
-              title={
-                notificationPermission === 'denied'
-                  ? 'Notifications blocked in browser settings'
-                  : notificationsEnabled
-                  ? 'Disable notifications'
-                  : 'Enable notifications'
-              }
-              disabled={notificationPermission === 'denied'}
-            >
-              {notificationsEnabled ? (
-                <Bell className="h-4 w-4 text-primary" />
-              ) : (
-                <BellOff className="h-4 w-4 text-muted-foreground" />
-              )}
-            </Button>
-          )}
-          <SyncIndicator status={syncStatus} />
-          <StatusBadge status={isConnected ? 'online' : 'offline'} />
+                disabled={notificationPermission === 'denied'}
+              >
+                {notificationsEnabled ? (
+                  <Bell className="h-4 w-4 text-primary" />
+                ) : (
+                  <BellOff className="h-4 w-4 text-muted-foreground" />
+                )}
+              </Button>
+            )}
+            <SyncIndicator status={syncStatus} />
+          </div>
         </div>
       </div>
 
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
         {messages.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-center">
-            <MessageSquareLock className="h-12 w-12 text-muted-foreground/50" />
-            <p className="mt-4 text-sm font-medium text-muted-foreground">
-              No messages yet
+          <div className="flex h-full flex-col items-center justify-center text-center animate-in fade-in duration-500">
+            <div className="flex h-20 w-20 items-center justify-center rounded-full bg-linear-to-br from-blue-50 to-violet-50 dark:from-blue-950/30 dark:to-violet-950/30">
+              <MessageSquareLock className="h-10 w-10 text-blue-400 dark:text-blue-500" />
+            </div>
+            <h3 className="mt-5 text-lg font-semibold text-foreground">Start a Conversation</h3>
+            <p className="mt-1.5 max-w-60 text-sm text-muted-foreground">
+              Send a message to start chatting securely across your devices
             </p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Send a message to start the conversation across your devices
-            </p>
+            <div className="mt-4 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
+              End-to-end encrypted
+            </div>
           </div>
         ) : (
-          <div className="space-y-3">
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={cn(
-                  'flex',
-                  msg.isLocal ? 'justify-end' : 'justify-start'
-                )}
-              >
-                <div
-                  className={cn(
-                    'max-w-[75%] rounded-2xl px-4 py-2.5',
-                    msg.isLocal
-                      ? 'rounded-br-md bg-primary text-primary-foreground'
-                      : 'rounded-bl-md bg-muted text-foreground'
-                  )}
-                >
-                  <p className="text-sm whitespace-pre-wrap wrap-break-word">{msg.text}</p>
-                  <p
-                    className={cn(
-                      'mt-1 text-[10px]',
-                      msg.isLocal
-                        ? 'text-primary-foreground/60'
-                        : 'text-muted-foreground'
-                    )}
-                  >
-                    {formatTime(msg.timestamp)}
-                    {!msg.isLocal && (
-                      <span className="ml-1.5">
-                        {getRemoteDeviceName(msg.deviceId)}
-                      </span>
-                    )}
-                  </p>
+          <div className="space-y-1">
+            {messageGroups.map((group) => (
+              <div key={group.label}>
+                {/* Date separator */}
+                <div className="flex items-center gap-3 py-3">
+                  <div className="h-px flex-1 bg-border" />
+                  <span className="text-[11px] font-medium text-muted-foreground">{group.label}</span>
+                  <div className="h-px flex-1 bg-border" />
+                </div>
+                {/* Messages in group */}
+                <div className="space-y-1.5">
+                  {group.messages.map((msg, idx) => {
+                    const isLocal = msg.isLocal;
+                    const isFirst = idx === 0 || group.messages[idx - 1].isLocal !== isLocal;
+                    const isLast = idx === group.messages.length - 1 || group.messages[idx + 1].isLocal !== isLocal;
+
+                    return (
+                      <div
+                        key={msg.id}
+                        className={cn(
+                          'flex',
+                          isLocal ? 'justify-end' : 'justify-start'
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            'max-w-[75%] px-4 py-2.5',
+                            isLocal
+                              ? 'bg-linear-to-br from-[#007AFF] to-[#5856D6] text-white'
+                              : 'bg-muted text-foreground',
+                            // Adaptive border radius based on grouping position
+                            isLocal
+                              ? cn(
+                                  'rounded-2xl',
+                                  isFirst && isLast ? 'rounded-br-md' : '',
+                                  isFirst && !isLast ? 'rounded-br-lg' : '',
+                                  !isFirst && isLast ? 'rounded-br-md rounded-tr-lg' : '',
+                                  !isFirst && !isLast ? 'rounded-r-lg' : '',
+                                )
+                              : cn(
+                                  'rounded-2xl',
+                                  isFirst && isLast ? 'rounded-bl-md' : '',
+                                  isFirst && !isLast ? 'rounded-bl-lg' : '',
+                                  !isFirst && isLast ? 'rounded-bl-md rounded-tl-lg' : '',
+                                  !isFirst && !isLast ? 'rounded-l-lg' : '',
+                                )
+                          )}
+                        >
+                          <p className="text-sm whitespace-pre-wrap wrap-break-word">{msg.text}</p>
+                          <div
+                            className={cn(
+                              'mt-1 flex items-center gap-1 text-[10px]',
+                              isLocal
+                                ? 'justify-end text-white/60'
+                                : 'text-muted-foreground'
+                            )}
+                          >
+                            <span>{formatTime(msg.timestamp)}</span>
+                            {!isLocal && (
+                              <span className="ml-1">
+                                {getRemoteDeviceName(msg.deviceId)}
+                              </span>
+                            )}
+                            {isLocal && (
+                              <CheckCheck className="h-3 w-3 text-white/50" />
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -296,7 +390,7 @@ export default function SecretChatPage() {
       </div>
 
       {/* Input bar */}
-      <div className="border-t border-border px-4 py-3">
+      <div className="border-t border-border bg-card/80 backdrop-blur-sm px-4 py-3">
         <div className="flex items-end gap-2">
           <textarea
             ref={inputRef}
@@ -307,7 +401,7 @@ export default function SecretChatPage() {
             disabled={!isConnected}
             rows={1}
             className={cn(
-              'flex-1 resize-none rounded-xl border border-input bg-background px-4 py-2.5 text-sm',
+              'flex-1 resize-none rounded-2xl border border-input bg-background px-4 py-2.5 text-sm',
               'placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring',
               'max-h-32 min-h-10',
               'disabled:cursor-not-allowed disabled:opacity-50'
@@ -322,16 +416,21 @@ export default function SecretChatPage() {
               target.style.height = Math.min(target.scrollHeight, 128) + 'px';
             }}
           />
-          <Button
-            size="icon"
+          <button
             onClick={handleSend}
             disabled={!inputText.trim() || isSending || !isConnected}
-            className="h-10 w-10 shrink-0 rounded-xl"
+            className={cn(
+              'flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all',
+              inputText.trim() && !isSending && isConnected
+                ? 'bg-linear-to-br from-[#007AFF] to-[#5856D6] text-white shadow-md hover:opacity-90'
+                : 'bg-muted text-muted-foreground'
+            )}
           >
-            <Send className="h-4 w-4" />
-          </Button>
+            <ArrowUp className="h-5 w-5" />
+          </button>
         </div>
       </div>
     </div>
+    </MainLayout>
   );
 }

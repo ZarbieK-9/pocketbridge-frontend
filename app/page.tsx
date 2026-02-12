@@ -12,18 +12,31 @@
  */
 
 import { MainLayout } from "@/components/layout/main-layout"
-import { Header } from "@/components/layout/header"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { FileText, MessageSquare, FolderOpen, Plus, Smartphone, Check, AlertCircle, Download, File, Trash2 } from "lucide-react"
+import { FileText, MessageSquare, FolderOpen, Plus, Smartphone, Check, AlertCircle, Download, File, Trash2, ShieldCheck, ShieldAlert, ShieldOff, Shield } from "lucide-react"
 import { useCrypto } from "@/hooks/use-crypto"
 import { useWebSocket } from "@/hooks/use-websocket"
 import { loadUserProfile, type UserProfile } from "@/lib/utils/user-profile"
 import { getOrCreateDeviceId, getOrCreateDeviceName, getDeviceRole } from "@/lib/utils/device"
 import { getWsUrl, loadPairedAccount, savePairedAccount, clearPairedAccount, updatePairedDevices, type PairedAccountInfo } from "@/lib/utils/storage"
-import { useEffect, useState, useRef } from "react"
+import { useEffect, useState, useRef, useMemo } from "react"
 import { logger } from "@/lib/utils/logger"
 import Link from "next/link"
+
+function getGreeting(): { greeting: string; emoji: string } {
+  const hour = new Date().getHours();
+  if (hour < 6) return { greeting: 'Good night', emoji: '🌙' };
+  if (hour < 12) return { greeting: 'Good morning', emoji: '☀️' };
+  if (hour < 17) return { greeting: 'Good afternoon', emoji: '🌤️' };
+  if (hour < 21) return { greeting: 'Good evening', emoji: '🌅' };
+  return { greeting: 'Good night', emoji: '🌙' };
+}
+
+function getTrustMessage(isConnected: boolean, deviceCount: number): string {
+  if (isConnected && deviceCount > 0) return 'Secure connection active · End-to-end encrypted';
+  if (isConnected) return 'Connected securely · Ready to pair devices';
+  return 'Establishing secure connection...';
+}
 
 interface PairedDevice {
   device_id: string;
@@ -66,6 +79,7 @@ export default function DashboardPage() {
     autoConnect: isInitialized,
   });
   
+  const [deviceName, setDeviceName] = useState<string>('PocketBridge');
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [pairedDevices, setPairedDevices] = useState<PairedDevice[]>([]);
   const [pairedAccount, setPairedAccount] = useState<PairedAccountInfo | null>(null);
@@ -78,6 +92,11 @@ export default function DashboardPage() {
   const lastDeviceCountRef = useRef<number>(0);
   const retryCountRef = useRef<number>(0);
   const isMountedRef = useRef<boolean>(true);
+
+  // Initialize device name on client only (avoid SSR hydration mismatch)
+  useEffect(() => {
+    setDeviceName(getOrCreateDeviceName() || 'PocketBridge');
+  }, []);
 
   // Load persistent paired account info on mount
   useEffect(() => {
@@ -406,163 +425,95 @@ export default function DashboardPage() {
     }
   };
 
+  const [greetingData, setGreetingData] = useState({ greeting: '', emoji: '' });
+  useEffect(() => {
+    setGreetingData(getGreeting());
+  }, []);
+  const { greeting, emoji } = greetingData;
+  const trustMsg = useMemo(() => getTrustMessage(isConnected, pairedDevices.length), [isConnected, pairedDevices.length]);
+  const onlineCount = pairedDevices.filter(d => d.is_online).length;
+
+  const getStatusIcon = () => {
+    if (isConnected && onlineCount > 0) return { Icon: ShieldCheck, color: 'text-green-500', bg: 'bg-green-50 dark:bg-green-950/30' };
+    if (isConnected) return { Icon: Shield, color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-950/30' };
+    return { Icon: ShieldAlert, color: 'text-amber-500', bg: 'bg-amber-50 dark:bg-amber-950/30' };
+  };
+  const statusIcon = getStatusIcon();
+
   return (
     <MainLayout>
-      <Header title="Dashboard" description="Overview of your devices and recent activity" />
+      {/* Welcome Header with gradient */}
+      <div className="bg-linear-to-br from-blue-50/80 to-violet-50/40 dark:from-blue-950/30 dark:to-violet-950/20 px-6 py-6 border-b border-border animate-in fade-in duration-500">
+        <p className="text-2xl mb-1">{emoji}</p>
+        <p className="text-sm font-medium text-muted-foreground">{greeting}</p>
+        <h1 className="text-3xl font-bold tracking-tight text-foreground mt-1">
+          {deviceName}
+        </h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          {userProfile ? 'Your bridge is ready.' : 'Welcome to PocketBridge'}
+        </p>
+      </div>
 
       <div className="p-6 space-y-6">
         {/* Error Banner */}
         {fetchError && (
-          <Card className="border-red-500 bg-red-50 dark:bg-red-950/20">
-            <CardContent className="pt-6">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="h-5 w-5 text-red-600 mt-0.5" />
-                <div className="flex-1">
-                  <h3 className="font-semibold text-red-900 dark:text-red-100">Connection Error</h3>
-                  <p className="text-sm text-red-700 dark:text-red-200 mt-1">{fetchError}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="flex items-start gap-3 p-4 rounded-xl border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/20 animate-in fade-in duration-300">
+            <AlertCircle className="h-5 w-5 text-red-600 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <h3 className="font-semibold text-red-900 dark:text-red-100">Connection Error</h3>
+              <p className="text-sm text-red-700 dark:text-red-200 mt-1">{fetchError}</p>
+            </div>
+          </div>
         )}
 
         {/* Unpaired Device Warning */}
         {userProfile?.onboardingCompleted && pairedDevices.length === 0 && !pairedAccount && (
-          <Card className="border-amber-500 bg-amber-50 dark:bg-amber-950/20">
-            <CardContent className="pt-6">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5" />
-                <div className="flex-1">
-                  <h3 className="font-semibold text-amber-900 dark:text-amber-100">Pair First, Then Upload</h3>
-                  <p className="text-sm text-amber-800 dark:text-amber-200 mt-1">
-                    Files uploaded now will only be stored on this device and won't sync to other devices. 
-                    <Link href="/pair" className="font-semibold underline ml-1 hover:opacity-80">
-                      Pair another device first
-                    </Link>
-                    to enable cross-device sync.
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Device Welcome */}
-        {userProfile && (
-          <Card className="bg-primary/5 border-primary/20">
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-4">
-                <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
-                  <span className="text-lg font-semibold text-primary">
-                    {getOrCreateDeviceName().charAt(0).toUpperCase()}
-                  </span>
-                </div>
-                <div className="flex-1">
-                  <h2 className="text-lg font-semibold">{getOrCreateDeviceName()}</h2>
-                  <p className="text-sm text-muted-foreground flex items-center gap-2">
-                    {isConnected ? (
-                      <>
-                        <Check className="h-4 w-4 text-green-600" />
-                        {pairedDevices.filter(d => d.is_online).length > 0
-                          ? `${pairedDevices.filter(d => d.is_online).length} device${pairedDevices.filter(d => d.is_online).length > 1 ? 's' : ''} online`
-                          : 'No devices online'
-                        }
-                      </>
-                    ) : (
-                      <>
-                        <AlertCircle className="h-4 w-4 text-yellow-600" />
-                        Connecting to backend...
-                      </>
-                    )}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+          <div className="flex items-start gap-3 p-4 rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/20 animate-in fade-in duration-300">
+            <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <h3 className="font-semibold text-amber-900 dark:text-amber-100">Pair First, Then Upload</h3>
+              <p className="text-sm text-amber-800 dark:text-amber-200 mt-1">
+                Files uploaded now won&apos;t sync to other devices.{' '}
+                <Link href="/pair" className="font-semibold underline hover:opacity-80">
+                  Pair another device first
+                </Link>
+              </p>
+            </div>
+          </div>
         )}
 
         {/* Connection Status */}
-        <Card className="border-l-4 border-l-blue-500">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Smartphone className="h-5 w-5" />
-              Connection Status
-              {deviceRole && (
-                <span className="ml-2 text-xs font-normal bg-primary/10 text-primary px-2 py-1 rounded">
-                  {deviceRole === 'sharer' ? 'Device A (Sharer)' : 'Device B (Receiver)'}
-                </span>
-              )}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">WebSocket Connection</span>
-              <span className="flex items-center gap-2">
-                <div className={`h-2 w-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-yellow-500'}`} />
-                <span className="text-sm font-medium">{isConnected ? 'Connected' : 'Connecting'}</span>
-              </span>
+        <p className="text-xs font-medium tracking-wider text-muted-foreground uppercase animate-in fade-in slide-in-from-bottom-1 duration-300" style={{ animationDelay: '100ms', animationFillMode: 'backwards' }}>
+          Connection
+        </p>
+        <div className="rounded-xl border bg-linear-to-br from-card to-blue-50/30 dark:to-blue-950/10 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '150ms', animationFillMode: 'backwards' }}>
+          <div className="flex items-center gap-3.5 px-4 py-3.5">
+            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${statusIcon.bg}`}>
+              <statusIcon.Icon className={`h-5 w-5 ${statusIcon.color}`} />
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Onboarding Status</span>
-              <span className="flex items-center gap-2">
-                {userProfile?.onboardingCompleted ? (
-                  <>
-                    <Check className="h-4 w-4 text-green-600" />
-                    <span className="text-sm font-medium text-green-600">Completed</span>
-                  </>
-                ) : (
-                  <>
-                    <AlertCircle className="h-4 w-4 text-yellow-600" />
-                    <span className="text-sm font-medium text-yellow-600">Incomplete</span>
-                  </>
-                )}
-              </span>
-            </div>
-            {pairedDevices.length > 0 && (
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">Paired Devices</span>
-                <span className="text-sm font-medium">{pairedDevices.length}</span>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Pairing Status & Call to Action */}
-        {pairedDevices.length === 0 && !pairedAccount ? (
-          <Card className="border-2 border-dashed border-primary/50 bg-primary/5">
-            <CardHeader>
-              <CardTitle className="text-base">No Other Devices Paired</CardTitle>
-              <CardDescription>Pair another device to sync across your workspace</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground mb-4">
-                PocketBridge works by connecting multiple devices. Pair your smartphone, tablet, or another computer to start syncing.
+            <div className="flex-1 min-w-0">
+              <p className="text-[15px] font-medium text-foreground">
+                {isConnected ? 'Connected' : 'Connecting...'}
               </p>
-              <Button asChild className="gap-2">
-                <Link href="/pair">
-                  <Plus className="h-4 w-4" />
-                  Pair Another Device
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
-        ) : (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
-                <Smartphone className="h-5 w-5" />
-                Connected Devices
-              </CardTitle>
-              <CardDescription>
-                {pairedDevices.filter(d => d.is_online).length > 0
-                  ? `${pairedDevices.filter(d => d.is_online).length} device${pairedDevices.filter(d => d.is_online).length > 1 ? 's' : ''} online`
-                  : 'No devices currently online'}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {/* Show paired account status even if no other devices online */}
+              <p className="text-xs text-muted-foreground mt-0.5">{trustMsg}</p>
+            </div>
+            {deviceRole && (
+              <span className="text-[11px] font-medium bg-primary/10 text-primary px-2 py-1 rounded-md shrink-0">
+                {deviceRole === 'sharer' ? 'Sharer' : 'Receiver'}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Your Devices */}
+        {(pairedDevices.length > 0 || pairedAccount) && (
+          <>
+            <p className="text-xs font-medium tracking-wider text-muted-foreground uppercase animate-in fade-in slide-in-from-bottom-1 duration-300" style={{ animationDelay: '200ms', animationFillMode: 'backwards' }}>
+              Your Devices
+            </p>
+            <div className="rounded-xl border bg-linear-to-br from-card to-emerald-50/20 dark:to-emerald-950/10 overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '250ms', animationFillMode: 'backwards' }}>
               {pairedAccount && pairedDevices.length === 0 && (
-                <div className="mb-4 p-3 rounded-lg border bg-muted/50">
+                <div className="px-4 py-3.5">
                   <div className="flex items-center gap-2 text-sm">
                     <Check className="h-4 w-4 text-green-500" />
                     <span>Account synced since {new Date(pairedAccount.pairedAt).toLocaleDateString()}</span>
@@ -573,147 +524,159 @@ export default function DashboardPage() {
                 </div>
               )}
 
-              <div className="space-y-3">
-                {pairedDevices.filter(d => d.is_online).map((device: PairedDevice) => {
-                  return (
-                    <div key={device.device_id} className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-accent/50 transition-colors">
-                      <div className="flex items-center gap-3 flex-1">
-                        {/* Status indicator with pulse animation for online */}
-                        <div className="relative">
-                          <div className="h-3 w-3 rounded-full bg-green-500" />
-                          <div className="absolute inset-0 h-3 w-3 rounded-full bg-green-500 animate-ping opacity-75" />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="font-medium text-sm truncate">{device.device_name || 'Other Device'}</p>
-                          <p className="text-xs text-muted-foreground flex items-center gap-1">
-                            <span className="text-green-600 font-medium">
-                              ● Online
-                            </span>
-                          </p>
-                        </div>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                        onClick={() => handleRemoveDevice(device)}
-                        disabled={removingDeviceId === device.device_id}
-                      >
-                        {removingDeviceId === device.device_id ? (
-                          <span className="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full" />
-                        ) : (
-                          <Trash2 className="h-4 w-4 mr-1" />
-                        )}
-                        {removingDeviceId === device.device_id ? 'Removing...' : 'Remove'}
-                      </Button>
+              {pairedDevices.filter(d => d.is_online).map((device: PairedDevice, index: number) => (
+                <div key={device.device_id}>
+                  {index > 0 && <div className="h-px bg-border ml-14" />}
+                  <div className="flex items-center gap-3.5 px-4 py-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-green-50 dark:bg-green-950/30">
+                      <Smartphone className="h-5 w-5 text-green-500" />
                     </div>
-                  );
-                })}
-              </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[15px] font-medium text-foreground truncate">{device.device_name || 'Other Device'}</p>
+                      <p className="text-xs text-green-600 font-medium">Online · Syncing</p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                      onClick={() => handleRemoveDevice(device)}
+                      disabled={removingDeviceId === device.device_id}
+                    >
+                      {removingDeviceId === device.device_id ? (
+                        <span className="animate-spin h-4 w-4 border-2 border-current border-t-transparent rounded-full" />
+                      ) : (
+                        <Trash2 className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              ))}
 
-              {pairedDevices.filter(d => d.is_online).length === 0 && pairedDevices.length > 0 && (
-                <div className="text-center py-8">
+              {onlineCount === 0 && pairedDevices.length > 0 && (
+                <div className="text-center py-6">
                   <p className="text-sm text-muted-foreground">No devices currently online</p>
                   <p className="text-xs text-muted-foreground mt-1">{pairedDevices.length} device{pairedDevices.length > 1 ? 's' : ''} paired but offline</p>
                 </div>
               )}
+            </div>
+          </>
+        )}
 
-              <Button variant="outline" className="w-full mt-4 gap-2" asChild>
-                <Link href="/pair">
-                  <Plus className="h-4 w-4" />
-                  Pair Another Device
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
+        {/* No devices CTA */}
+        {pairedDevices.length === 0 && !pairedAccount && (
+          <div className="rounded-xl border-2 border-dashed border-primary/30 bg-primary/5 p-6 text-center animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '200ms', animationFillMode: 'backwards' }}>
+            <Smartphone className="h-8 w-8 text-primary mx-auto mb-3 opacity-60" />
+            <p className="text-sm font-semibold text-foreground">No Other Devices Paired</p>
+            <p className="text-xs text-muted-foreground mt-1 mb-4">Pair your smartphone or another computer to start syncing</p>
+            <Button asChild className="gap-2">
+              <Link href="/pair">
+                <Plus className="h-4 w-4" />
+                Pair Another Device
+              </Link>
+            </Button>
+          </div>
         )}
 
         {/* Quick Actions */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Quick Actions</CardTitle>
-            <CardDescription>Common tasks across your devices</CardDescription>
-          </CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent hover:bg-primary/5" asChild>
-              <Link href="/scratchpad" aria-label="Open Scratchpad">
-                <FileText className="h-6 w-6 text-primary" aria-hidden="true" />
-                <span>Open Scratchpad</span>
+        <p className="text-xs font-medium tracking-wider text-muted-foreground uppercase animate-in fade-in slide-in-from-bottom-1 duration-300" style={{ animationDelay: '300ms', animationFillMode: 'backwards' }}>
+          Quick Actions
+        </p>
+        <div className="grid grid-cols-3 gap-3">
+          {[
+            { icon: FolderOpen, label: 'Send File', color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-950/30', route: '/files' },
+            { icon: FileText, label: 'Scratchpad', color: 'text-emerald-500', bg: 'bg-emerald-50 dark:bg-emerald-950/30', route: '/scratchpad' },
+            { icon: MessageSquare, label: 'Messages', color: 'text-violet-500', bg: 'bg-violet-50 dark:bg-violet-950/30', route: '/messages' },
+          ].map((action, i) => {
+            const ActionIcon = action.icon;
+            return (
+              <Link
+                key={action.label}
+                href={action.route}
+                className="flex flex-col items-center gap-2 rounded-xl border bg-card py-4 px-2 transition-colors hover:bg-accent/50 animate-in fade-in slide-in-from-bottom-3 duration-400"
+                style={{ animationDelay: `${350 + i * 80}ms`, animationFillMode: 'backwards' }}
+              >
+                <div className={`flex h-11 w-11 items-center justify-center rounded-lg ${action.bg}`}>
+                  <ActionIcon className={`h-5 w-5 ${action.color}`} />
+                </div>
+                <span className="text-xs font-medium text-foreground">{action.label}</span>
               </Link>
-            </Button>
-            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent hover:bg-primary/5" asChild>
-              <Link href="/messages" aria-label="Secret Chat">
-                <MessageSquare className="h-6 w-6 text-primary" aria-hidden="true" />
-                <span>Secret Chat</span>
-              </Link>
-            </Button>
-            <Button variant="outline" className="h-auto flex-col gap-2 py-4 bg-transparent hover:bg-primary/5" asChild>
-              <Link href="/files" aria-label="Share File">
-                <FolderOpen className="h-6 w-6 text-primary" aria-hidden="true" />
-                <span>Share File</span>
-              </Link>
-            </Button>
-          </CardContent>
-        </Card>
+            );
+          })}
+        </div>
+
+        {/* Pair Another Device button (when already paired) */}
+        {(pairedDevices.length > 0 || pairedAccount) && (
+          <Button variant="outline" className="w-full gap-2" asChild>
+            <Link href="/pair">
+              <Plus className="h-4 w-4" />
+              Pair Another Device
+            </Link>
+          </Button>
+        )}
 
         {/* Recent Activity */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Recent Activity</CardTitle>
-            <CardDescription>Latest synced events across devices</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {isLoadingActivity ? (
-              <div className="flex items-center justify-center py-8">
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary"></div>
-              </div>
-            ) : recentActivity.length > 0 ? (
-              <div className="space-y-3">
-                {recentActivity.map((event: ActivityEvent) => {
-                  // Handle both API response (string ISO date) and WebSocket (number timestamp)
-                  let eventDate: Date;
-                  if (typeof event.created_at === 'string') {
-                    eventDate = new Date(event.created_at);
-                  } else if (typeof event.created_at === 'number') {
-                    eventDate = new Date(event.created_at);
-                  } else {
-                    eventDate = new Date();
-                  }
-                  
-                  const formattedTime = eventDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                  const formattedDate = eventDate.toLocaleDateString();
-                  
-                  // Format file size
-                  const formatSize = (bytes?: number) => {
-                    if (!bytes) return '';
-                    if (bytes < 1024) return `${bytes}B`;
-                    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-                    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-                  };
+        <p className="text-xs font-medium tracking-wider text-muted-foreground uppercase animate-in fade-in slide-in-from-bottom-1 duration-300" style={{ animationDelay: '500ms', animationFillMode: 'backwards' }}>
+          Recent Activity
+        </p>
+        <div className="animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '550ms', animationFillMode: 'backwards' }}>
+          {isLoadingActivity ? (
+            <div className="space-y-3">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="flex items-center gap-3 p-3 rounded-xl border bg-card">
+                  <div className="h-9 w-9 rounded-lg bg-muted animate-shimmer" />
+                  <div className="flex-1 space-y-2">
+                    <div className="h-3 w-24 rounded bg-muted animate-shimmer" />
+                    <div className="h-2.5 w-40 rounded bg-muted animate-shimmer" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : recentActivity.length > 0 ? (
+            <div className="space-y-2.5">
+              {recentActivity.map((event: ActivityEvent) => {
+                let eventDate: Date;
+                if (typeof event.created_at === 'string') {
+                  eventDate = new Date(event.created_at);
+                } else if (typeof event.created_at === 'number') {
+                  eventDate = new Date(event.created_at);
+                } else {
+                  eventDate = new Date();
+                }
 
-                  return (
-                    <div key={event.event_id} className="flex items-start gap-3 p-3 rounded-lg border bg-card/50">
-                      <Download className="h-4 w-4 text-primary mt-1 shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium">File Synced</p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          {formattedTime} • {formattedDate}
-                          {event.payload_size && ` • ${formatSize(event.payload_size)}`}
-                        </p>
-                      </div>
+                const formattedTime = eventDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                const formattedDate = eventDate.toLocaleDateString();
+
+                const formatSize = (bytes?: number) => {
+                  if (!bytes) return '';
+                  if (bytes < 1024) return `${bytes}B`;
+                  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+                  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+                };
+
+                return (
+                  <div key={event.event_id} className="flex items-center gap-3 p-3 rounded-xl border bg-linear-to-r from-card to-blue-50/20 dark:to-blue-950/10">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950/30">
+                      <Download className="h-4 w-4 text-blue-500" />
                     </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="rounded-lg border border-dashed border-border p-8 text-center">
-                <File className="h-8 w-8 text-muted-foreground mx-auto mb-2 opacity-50" />
-                <p className="text-sm text-muted-foreground">No recent activity</p>
-                <p className="text-xs text-muted-foreground mt-1">Start using features to see activity here</p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-foreground">File Synced</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {formattedTime} · {formattedDate}
+                        {event.payload_size && ` · ${formatSize(event.payload_size)}`}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-border p-8 text-center">
+              <File className="h-8 w-8 text-muted-foreground mx-auto mb-2 opacity-40" />
+              <p className="text-sm text-muted-foreground">No recent activity</p>
+              <p className="text-xs text-muted-foreground mt-1">Start using features to see activity here</p>
+            </div>
+          )}
+        </div>
       </div>
     </MainLayout>
   )

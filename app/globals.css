@@ -146,3 +146,25 @@
 .animate-slide-up {
   animation: slide-up 0.3s ease-out;
 }
+
+/* Shimmer skeleton animation for loading states */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent 25%, oklch(0.9 0 0 / 0.5) 50%, transparent 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+.dark .animate-shimmer {
+  background: linear-gradient(90deg, transparent 25%, oklch(0.3 0 0 / 0.5) 50%, transparent 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}

@@ -7,13 +7,10 @@
 import * as React from "react"
 import { useTheme } from "next-themes"
 import { MainLayout } from "@/components/layout/main-layout"
-import { Header } from "@/components/layout/header"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
-import { Separator } from "@/components/ui/separator"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { PWAInstaller } from "@/components/pwa-installer"
 import { SessionTimeout } from "@/components/session-timeout"
@@ -32,6 +29,8 @@ import { analytics } from "@/lib/utils/analytics"
 import { SyncStatus } from "@/components/sync-status"
 import { StorageQuotaMonitor } from "@/components/storage-quota-monitor"
 import { toast } from "sonner"
+import { Settings, Smartphone, KeyRound, QrCode, ScanLine, Palette, Bell, BellOff, ShieldCheck, Database, Download, Upload, CheckCircle2, Trash2, KeySquare, UserX, RefreshCw, HardDrive, ChevronRight, Link2Off } from "lucide-react"
+import { cn } from "@/lib/utils"
 
 export default function SettingsPage() {
   const { identityKeyPair, isInitialized } = useCrypto();
@@ -253,300 +252,303 @@ export default function SettingsPage() {
 
   return (
     <MainLayout>
-      <Header title="Settings" description="Manage your PocketBridge preferences" />
+      {/* Gradient Header */}
+      <div className="border-b border-border bg-linear-to-b from-blue-50/60 to-card dark:from-blue-950/20 dark:to-card animate-in fade-in duration-400">
+        <div className="px-6 py-5">
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">Settings</h1>
+        </div>
+      </div>
 
-      <div className="p-6 space-y-6">
-        {/* Session Status */}
-        {sessionExpiresAt && (
-        <SessionTimeout 
-          expiresAt={sessionExpiresAt}
-          onRefresh={() => logger.info('Session refresh requested')}
-          onExpired={() => logger.warn('Session expired')}
-        />)}
-
-        {/* Pair Device */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Pair Device</CardTitle>
-            <CardDescription>Connect to your desktop app by scanning a QR code</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button asChild className="w-full">
-              <a href="/pair">Scan QR Code</a>
-            </Button>
-          </CardContent>
-        </Card>
-
-        {/* PWA Install */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Install App</CardTitle>
-            <CardDescription>Install PocketBridge as a standalone app for better performance and background sync</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <PWAInstaller />
-          </CardContent>
-        </Card>
-
-        {/* Appearance */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Appearance</CardTitle>
-            <CardDescription>Customize the look and feel</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>Theme</Label>
-                <p className="text-sm text-muted-foreground">Select your preferred color scheme</p>
-              </div>
-              <Select value={theme} onValueChange={setTheme}>
-                <SelectTrigger className="w-[140px]">
-                  <SelectValue placeholder="Select theme" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="light">Light</SelectItem>
-                  <SelectItem value="dark">Dark</SelectItem>
-                  <SelectItem value="system">System</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Device Settings */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Device Settings</CardTitle>
-            <CardDescription>Configure this device</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="device-name">Device Name</Label>
-              <Input
-                id="device-name"
-                value={deviceName}
-                onChange={(e) => handleDeviceNameChange(e.target.value)}
-                placeholder="Enter device name"
+      <div className="flex-1 overflow-y-auto">
+        <div className="p-6 space-y-1">
+          {/* Session Status */}
+          {sessionExpiresAt && (
+            <div className="mb-4">
+              <SessionTimeout
+                expiresAt={sessionExpiresAt}
+                onRefresh={() => logger.info('Session refresh requested')}
+                onExpired={() => logger.warn('Session expired')}
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="device-id">Device ID</Label>
-              <Input id="device-id" value={deviceId} disabled className="font-mono text-sm" />
-            </div>
-          </CardContent>
-        </Card>
+          )}
 
-        {/* Sync Status */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Sync Status</CardTitle>
-            <CardDescription>Monitor and control event synchronization</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <SyncStatus
-              showDetails={true}
-              refreshInterval={3000}
-              onSyncTrigger={() => {
-                toast.info('Syncing pending events...', { duration: 2000 });
-                analytics.track('manual_sync_triggered');
-              }}
-            />
-            <p className="mt-4 text-sm text-muted-foreground">
-              Events are automatically synced when online. Use "Sync Now" to force immediate synchronization of pending events.
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Storage Quota */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Storage</CardTitle>
-            <CardDescription>Monitor local browser storage usage</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <StorageQuotaMonitor
-              showDetails={true}
-              onQuotaExceeded={(msg) => {
-                console.error('[Settings] Storage quota exceeded:', msg);
-                analytics.track('storage_quota_exceeded');
-              }}
-              onWarningLevelChange={(level) => {
-                if (level === 'critical') {
-                  toast.warning('Storage critically low!', {
-                    description: 'Consider syncing your data soon to free up space.',
-                  });
-                  analytics.track('storage_warning', { level });
-                }
-              }}
-            />
-            <p className="mt-4 text-sm text-muted-foreground">
-              Local storage is used to queue events when offline. Clear browser storage or sync data to free up space.
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Sync Settings */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Sync Settings</CardTitle>
-            <CardDescription>Control how data syncs between devices</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>Sync on mobile data</Label>
-                <p className="text-sm text-muted-foreground">Allow syncing over cellular connection</p>
-              </div>
-              <Switch />
-            </div>
-            <Separator />
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>Offline mode</Label>
-                <p className="text-sm text-muted-foreground">Queue changes when offline</p>
-              </div>
-              <Switch defaultChecked />
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Notification Settings */}
-        {notificationsSupported && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Notifications</CardTitle>
-              <CardDescription>Manage notification preferences</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="space-y-0.5">
-                  <Label>Push notifications</Label>
-                  <p className="text-sm text-muted-foreground">
-                    {notificationPermission === 'denied'
-                      ? 'Notifications are blocked in your browser settings'
-                      : 'Get notified when you receive messages'}
-                  </p>
+          {/* DEVICE INFORMATION */}
+          <div className="animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '100ms', animationFillMode: 'backwards' }}>
+            <h2 className="mb-2 ml-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Device Information</h2>
+            <div className="rounded-2xl border border-border bg-card overflow-hidden">
+              <div className="flex items-center gap-3.5 px-4 py-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950/40">
+                  <Smartphone className="h-4 w-4 text-blue-500" />
                 </div>
-                {notificationPermission === 'default' ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={async () => {
-                      const result = await requestPermission();
-                      if (result === 'granted') {
-                        await setNotificationsEnabled(true);
-                      }
-                    }}
-                  >
-                    Enable
-                  </Button>
-                ) : (
-                  <Switch
-                    checked={notificationsEnabled}
-                    onCheckedChange={setNotificationsEnabled}
-                    disabled={notificationPermission === 'denied'}
-                  />
-                )}
+                <div className="min-w-0 flex-1">
+                  <Label htmlFor="device-name" className="text-sm">Device Name</Label>
+                </div>
+                <Input
+                  id="device-name"
+                  value={deviceName}
+                  onChange={(e) => handleDeviceNameChange(e.target.value)}
+                  placeholder="Enter device name"
+                  className="w-40 h-8 text-sm text-right border-0 shadow-none focus-visible:ring-0"
+                />
               </div>
-              {notificationPermission === 'denied' && (
-                <p className="text-xs text-muted-foreground">
-                  To enable notifications, please allow them in your browser settings for this site.
-                </p>
+              <div className="mx-4 h-px bg-border" />
+              <div className="flex items-center gap-3.5 px-4 py-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-muted">
+                  <KeyRound className="h-4 w-4 text-muted-foreground" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-foreground">Device ID</p>
+                </div>
+                <p className="text-xs font-mono text-muted-foreground">{deviceId.substring(0, 8)}...</p>
+              </div>
+              {identityKeyPair?.publicKeyHex && (
+                <>
+                  <div className="mx-4 h-px bg-border" />
+                  <div className="flex items-center gap-3.5 px-4 py-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-50 dark:bg-emerald-950/40">
+                      <ShieldCheck className="h-4 w-4 text-emerald-500" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-foreground">Public Key</p>
+                    </div>
+                    <p className="text-xs font-mono text-muted-foreground">{identityKeyPair.publicKeyHex.substring(0, 12)}...</p>
+                  </div>
+                </>
               )}
-            </CardContent>
-          </Card>
-        )}
+            </div>
+          </div>
 
-        {/* Security Settings */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Security</CardTitle>
-            <CardDescription>Manage encryption and security settings</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label>Public Key</Label>
-              <Input 
-                value={identityKeyPair?.publicKeyHex || 'Not available'} 
-                disabled 
-                className="font-mono text-xs" 
-              />
-              <p className="text-xs text-muted-foreground">Your device's public key for E2E encryption</p>
+          {/* DEVICE PAIRING */}
+          <div className="pt-5 animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '200ms', animationFillMode: 'backwards' }}>
+            <h2 className="mb-2 ml-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Device Pairing</h2>
+            <div className="rounded-2xl border border-border bg-card overflow-hidden">
+              <a href="/pair" className="flex items-center gap-3.5 px-4 py-3 transition-colors hover:bg-muted/50">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950/40">
+                  <QrCode className="h-4 w-4 text-blue-500" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-foreground">Pair Device</p>
+                  <p className="text-xs text-muted-foreground">Generate or scan a pairing code</p>
+                </div>
+                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              </a>
             </div>
-            <Separator />
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label>Require device verification</Label>
-                <p className="text-sm text-muted-foreground">New devices must be approved</p>
-              </div>
-              <Switch defaultChecked />
-            </div>
-          </CardContent>
-        </Card>
+          </div>
 
-        {/* Data Management */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Data Management</CardTitle>
-            <CardDescription>Backup, restore, and manage your data</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={handleExportData}>
-                Export Data
-              </Button>
-              <Button variant="outline" onClick={handleImportData}>
-                Import Data
-              </Button>
-              <Button variant="outline" onClick={handleCheckIntegrity}>
-                Check Integrity
-              </Button>
+          {/* APPEARANCE */}
+          <div className="pt-5 animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '250ms', animationFillMode: 'backwards' }}>
+            <h2 className="mb-2 ml-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Appearance</h2>
+            <div className="rounded-2xl border border-border bg-card overflow-hidden">
+              <div className="flex items-center gap-3.5 px-4 py-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-violet-50 dark:bg-violet-950/40">
+                  <Palette className="h-4 w-4 text-violet-500" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-foreground">Theme</p>
+                  <p className="text-xs text-muted-foreground">Color scheme preference</p>
+                </div>
+                <Select value={theme} onValueChange={setTheme}>
+                  <SelectTrigger className="w-28 h-8 text-xs border-0 shadow-none">
+                    <SelectValue placeholder="Select theme" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="light">Light</SelectItem>
+                    <SelectItem value="dark">Dark</SelectItem>
+                    <SelectItem value="system">System</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Export your data as a backup, import from a backup, or check data integrity.
-            </p>
-          </CardContent>
-        </Card>
+          </div>
 
-        {/* Danger Zone */}
-        <Card className="border-destructive/50">
-          <CardHeader>
-            <CardTitle className="text-destructive">Danger Zone</CardTitle>
-            <CardDescription>Irreversible actions</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">Clear all data</p>
-                <p className="text-sm text-muted-foreground">Remove all synced data from this device</p>
-              </div>
-              <Button variant="destructive" onClick={clearDatabase}>Clear Data</Button>
+          {/* INSTALL APP */}
+          <div className="pt-5 animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '300ms', animationFillMode: 'backwards' }}>
+            <h2 className="mb-2 ml-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Install App</h2>
+            <div className="rounded-2xl border border-border bg-card overflow-hidden px-4 py-3">
+              <PWAInstaller />
             </div>
-            <Separator />
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">Reset encryption keys</p>
-                <p className="text-sm text-muted-foreground">Generate new keys (will disconnect devices)</p>
+          </div>
+
+          {/* PREFERENCES */}
+          <div className="pt-5 animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '350ms', animationFillMode: 'backwards' }}>
+            <h2 className="mb-2 ml-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Preferences</h2>
+            <div className="rounded-2xl border border-border bg-card overflow-hidden">
+              <div className="flex items-center gap-3.5 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-foreground">Sync on mobile data</p>
+                  <p className="text-xs text-muted-foreground">Allow syncing over cellular</p>
+                </div>
+                <Switch />
               </div>
-              <Button variant="destructive" onClick={resetCryptoKeys}>Reset Keys</Button>
+              <div className="mx-4 h-px bg-border" />
+              <div className="flex items-center gap-3.5 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-foreground">Offline mode</p>
+                  <p className="text-xs text-muted-foreground">Queue changes when offline</p>
+                </div>
+                <Switch defaultChecked />
+              </div>
+              <div className="mx-4 h-px bg-border" />
+              <div className="flex items-center gap-3.5 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-foreground">Require device verification</p>
+                  <p className="text-xs text-muted-foreground">New devices must be approved</p>
+                </div>
+                <Switch defaultChecked />
+              </div>
+              {/* Notifications */}
+              {notificationsSupported && (
+                <>
+                  <div className="mx-4 h-px bg-border" />
+                  <div className="flex items-center gap-3.5 px-4 py-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-50 dark:bg-amber-950/40">
+                      {notificationsEnabled ? (
+                        <Bell className="h-4 w-4 text-amber-500" />
+                      ) : (
+                        <BellOff className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-foreground">Push notifications</p>
+                      <p className="text-xs text-muted-foreground">
+                        {notificationPermission === 'denied'
+                          ? 'Blocked in browser settings'
+                          : 'Get notified on new messages'}
+                      </p>
+                    </div>
+                    {notificationPermission === 'default' ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs rounded-lg"
+                        onClick={async () => {
+                          const result = await requestPermission();
+                          if (result === 'granted') {
+                            await setNotificationsEnabled(true);
+                          }
+                        }}
+                      >
+                        Enable
+                      </Button>
+                    ) : (
+                      <Switch
+                        checked={notificationsEnabled}
+                        onCheckedChange={setNotificationsEnabled}
+                        disabled={notificationPermission === 'denied'}
+                      />
+                    )}
+                  </div>
+                </>
+              )}
             </div>
-            <Separator />
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="font-medium">Delete account</p>
-                <p className="text-sm text-muted-foreground">Permanently delete your account and all data</p>
+          </div>
+
+          {/* SYNC & STORAGE */}
+          <div className="pt-5 animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '400ms', animationFillMode: 'backwards' }}>
+            <h2 className="mb-2 ml-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Sync & Storage</h2>
+            <div className="rounded-2xl border border-border bg-card overflow-hidden">
+              <div className="px-4 py-3">
+                <SyncStatus
+                  showDetails={true}
+                  refreshInterval={3000}
+                  onSyncTrigger={() => {
+                    toast.info('Syncing pending events...', { duration: 2000 });
+                    analytics.track('manual_sync_triggered');
+                  }}
+                />
               </div>
-              <Button
-                variant="destructive"
+              <div className="mx-4 h-px bg-border" />
+              <div className="px-4 py-3">
+                <StorageQuotaMonitor
+                  showDetails={true}
+                  onQuotaExceeded={(msg) => {
+                    console.error('[Settings] Storage quota exceeded:', msg);
+                    analytics.track('storage_quota_exceeded');
+                  }}
+                  onWarningLevelChange={(level) => {
+                    if (level === 'critical') {
+                      toast.warning('Storage critically low!', {
+                        description: 'Consider syncing your data soon to free up space.',
+                      });
+                      analytics.track('storage_warning', { level });
+                    }
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* DATA MANAGEMENT */}
+          <div className="pt-5 animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '450ms', animationFillMode: 'backwards' }}>
+            <h2 className="mb-2 ml-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Data Management</h2>
+            <div className="rounded-2xl border border-border bg-card overflow-hidden">
+              <button onClick={handleExportData} className="flex w-full items-center gap-3.5 px-4 py-3 transition-colors hover:bg-muted/50">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950/40">
+                  <Download className="h-4 w-4 text-blue-500" />
+                </div>
+                <div className="min-w-0 flex-1 text-left">
+                  <p className="text-sm font-medium text-foreground">Export Data</p>
+                  <p className="text-xs text-muted-foreground">Download a backup of your data</p>
+                </div>
+              </button>
+              <div className="mx-4 h-px bg-border" />
+              <button onClick={handleImportData} className="flex w-full items-center gap-3.5 px-4 py-3 transition-colors hover:bg-muted/50">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-50 dark:bg-emerald-950/40">
+                  <Upload className="h-4 w-4 text-emerald-500" />
+                </div>
+                <div className="min-w-0 flex-1 text-left">
+                  <p className="text-sm font-medium text-foreground">Import Data</p>
+                  <p className="text-xs text-muted-foreground">Restore from a backup file</p>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Security trust note */}
+          <div className="flex items-center gap-2 px-1 pt-4 animate-in fade-in duration-400" style={{ animationDelay: '500ms', animationFillMode: 'backwards' }}>
+            <ShieldCheck className="h-4 w-4 text-emerald-500" />
+            <p className="text-xs text-muted-foreground">All data is end-to-end encrypted. Your keys never leave this device.</p>
+          </div>
+
+          {/* DANGER ZONE */}
+          <div className="pt-5 animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '550ms', animationFillMode: 'backwards' }}>
+            <h2 className="mb-2 ml-1 text-xs font-semibold uppercase tracking-wider text-red-500">Danger Zone</h2>
+            <div className="rounded-2xl border border-red-200 dark:border-red-900/50 bg-card overflow-hidden">
+              <button onClick={clearDatabase} className="flex w-full items-center gap-3.5 px-4 py-3 transition-colors hover:bg-red-50/50 dark:hover:bg-red-950/20">
+                <Trash2 className="h-5 w-5 text-red-500" />
+                <div className="min-w-0 flex-1 text-left">
+                  <p className="text-sm font-medium text-red-600 dark:text-red-400">Clear all data</p>
+                  <p className="text-xs text-muted-foreground">Remove all synced data from this device</p>
+                </div>
+              </button>
+              <div className="mx-4 h-px bg-red-200 dark:bg-red-900/50" />
+              <button onClick={resetCryptoKeys} className="flex w-full items-center gap-3.5 px-4 py-3 transition-colors hover:bg-red-50/50 dark:hover:bg-red-950/20">
+                <KeySquare className="h-5 w-5 text-red-500" />
+                <div className="min-w-0 flex-1 text-left">
+                  <p className="text-sm font-medium text-red-600 dark:text-red-400">Reset encryption keys</p>
+                  <p className="text-xs text-muted-foreground">Generate new keys (will disconnect devices)</p>
+                </div>
+              </button>
+              <div className="mx-4 h-px bg-red-200 dark:bg-red-900/50" />
+              <button
                 onClick={deleteAccount}
                 disabled={isDeletingAccount || !userId}
+                className="flex w-full items-center gap-3.5 px-4 py-3 transition-colors hover:bg-red-50/50 dark:hover:bg-red-950/20 disabled:opacity-50"
               >
-                {isDeletingAccount ? 'Deleting...' : 'Delete Account'}
-              </Button>
+                <UserX className="h-5 w-5 text-red-500" />
+                <div className="min-w-0 flex-1 text-left">
+                  <p className="text-sm font-medium text-red-600 dark:text-red-400">
+                    {isDeletingAccount ? 'Deleting account...' : 'Delete account'}
+                  </p>
+                  <p className="text-xs text-muted-foreground">Permanently delete your account and all data</p>
+                </div>
+              </button>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+
+          {/* Footer */}
+          <p className="pt-6 pb-4 text-center text-xs text-muted-foreground">PocketBridge Web v0.1.0</p>
+        </div>
       </div>
     </MainLayout>
   )
