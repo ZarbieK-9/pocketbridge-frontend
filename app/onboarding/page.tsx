@@ -130,11 +130,32 @@ export default function OnboardingPage() {
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-linear-to-b from-background to-blue-50/50 dark:to-blue-950/20">
-      <OnboardingFlow
-        userId={identityKeyPair.publicKeyHex}
-        currentDeviceName={deviceName}
-        onComplete={handleComplete}
-      />
+      <div className="w-full max-w-3xl space-y-4">
+        <div className="flex items-start gap-3 p-4 rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/20">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-100 dark:bg-emerald-900/40">
+            <PocketBridgeLogo size={20} />
+          </div>
+          <div className="flex-1">
+            <h3 className="font-semibold text-emerald-900 dark:text-emerald-100">Mobile app is available</h3>
+            <p className="text-sm text-emerald-800 dark:text-emerald-200 mt-1">
+              Download the Android APK for your phone.{" "}
+              <a
+                href="https://expo.dev/accounts/zarbiek-9/projects/mobile-agent/builds/85b427d7-bcc6-495e-a632-8eacfaf75267"
+                target="_blank"
+                rel="noreferrer"
+                className="font-semibold underline hover:opacity-80"
+              >
+                Get the latest build
+              </a>
+            </p>
+          </div>
+        </div>
+        <OnboardingFlow
+          userId={identityKeyPair.publicKeyHex}
+          currentDeviceName={deviceName}
+          onComplete={handleComplete}
+        />
+      </div>
     </div>
   );
 }

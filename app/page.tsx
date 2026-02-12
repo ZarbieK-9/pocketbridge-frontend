@@ -455,6 +455,24 @@ export default function DashboardPage() {
       </div>
 
       <div className="p-6 space-y-6">
+        <div className="flex items-start gap-3 p-4 rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/20 animate-in fade-in duration-300">
+          <Smartphone className="h-5 w-5 text-emerald-600 mt-0.5 shrink-0" />
+          <div className="flex-1">
+            <h3 className="font-semibold text-emerald-900 dark:text-emerald-100">Mobile app is available</h3>
+            <p className="text-sm text-emerald-800 dark:text-emerald-200 mt-1">
+              Download the Android APK for your phone.{" "}
+              <a
+                href="https://expo.dev/accounts/zarbiek-9/projects/mobile-agent/builds/85b427d7-bcc6-495e-a632-8eacfaf75267"
+                target="_blank"
+                rel="noreferrer"
+                className="font-semibold underline hover:opacity-80"
+              >
+                Get the latest build
+              </a>
+            </p>
+          </div>
+        </div>
+
         {/* Error Banner */}
         {fetchError && (
           <div className="flex items-start gap-3 p-4 rounded-xl border border-red-200 dark:border-red-900 bg-red-50 dark:bg-red-950/20 animate-in fade-in duration-300">
