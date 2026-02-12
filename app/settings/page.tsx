@@ -374,7 +374,7 @@ export default function SettingsPage() {
                   <p className="text-xs text-muted-foreground">Open the link to get the latest build</p>
                 </div>
                 <a
-                  href="https://expo.dev/accounts/zarbiek-9/projects/mobile-agent/builds/85b427d7-bcc6-495e-a632-8eacfaf75267"
+                  href="https://expo.dev/accounts/zarbiek-9/projects/mobile-agent/builds/97ed40cc-08ad-49b7-8077-abecaee34e47"
                   target="_blank"
                   rel="noreferrer"
                   className="text-xs font-semibold text-blue-600 hover:text-blue-700"
