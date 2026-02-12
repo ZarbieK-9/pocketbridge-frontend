@@ -52,7 +52,7 @@ function ToastComponent({ toast, onClose }: ToastProps) {
   return (
     <div
       className={cn(
-        'flex items-center gap-3 rounded-lg border p-4 shadow-lg min-w-[300px] max-w-[500px]',
+        'flex items-center gap-3 rounded-lg border p-4 shadow-lg min-w-75 max-w-125',
         styles[toast.type]
       )}
     >
