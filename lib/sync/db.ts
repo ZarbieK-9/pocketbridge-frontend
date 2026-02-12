@@ -88,6 +88,10 @@ export async function getDatabase(): Promise<IDBDatabase> {
 export async function addEvent(event: EncryptedEvent): Promise<void> {
   const db = await getDatabase();
 
+  if (event.created_at === undefined) {
+    event.created_at = Date.now();
+  }
+
   return new Promise((resolve, reject) => {
     const transaction = db.transaction([STORE_EVENTS], 'readwrite');
     const store = transaction.objectStore(STORE_EVENTS);

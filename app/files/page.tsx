@@ -10,8 +10,9 @@
  * - Resume support
  */
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
+import { eventRouter } from '@/lib/ws/event-router';
 import { useCrypto } from '@/hooks/use-crypto';
 import { getWebSocketClient } from '@/lib/ws';
 import {
@@ -90,7 +91,7 @@ interface FileTransfer {
 export default function FilesPage() {
   const deviceId = getOrCreateDeviceId();
   const { isInitialized: cryptoInitialized, identityKeyPair } = useCrypto();
-  const { isConnected, sessionKeys, lastEvent, lastSystemMessage } = useWebSocket({
+  const { isConnected, sessionKeys, lastSystemMessage } = useWebSocket({
     url: WS_URL,
     deviceId,
     autoConnect: cryptoInitialized,
@@ -101,6 +102,37 @@ export default function FilesPage() {
   const [fileHistory, setFileHistory] = useState<FileHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const dedupeHistory = useCallback((items: FileHistoryItem[]) => {
+    const seen = new Set<string>();
+    return items.filter((item) => {
+      if (seen.has(item.eventId)) return false;
+      seen.add(item.eventId);
+      return true;
+    });
+  }, []);
+
+  const addHistoryItem = useCallback((item: FileHistoryItem) => {
+    setFileHistory((prev) => {
+      if (prev.some((entry) => entry.eventId === item.eventId)) return prev;
+      return [item, ...prev];
+    });
+  }, []);
+
+  const dedupedHistory = useMemo(() => dedupeHistory(fileHistory), [fileHistory, dedupeHistory]);
+
+  const dedupeTransfers = useCallback((items: FileTransfer[]) => {
+    const seen = new Map<string, FileTransfer>();
+    for (const item of items) {
+      const existing = seen.get(item.fileId);
+      if (!existing || item.progress > existing.progress || item.status === 'completed') {
+        seen.set(item.fileId, item);
+      }
+    }
+    return Array.from(seen.values());
+  }, []);
+
+  const dedupedTransfers = useMemo(() => dedupeTransfers(transfers), [transfers, dedupeTransfers]);
 
   // Map of fileId to metadata for quick lookup (still needed for decryption key)
   const metadataCache = useRef<Map<string, any>>(new Map());
@@ -128,7 +160,7 @@ export default function FilesPage() {
         setTransfers(prev => {
           const failedTransfer = prev.find(t => t.fileId === fileId && t.status === 'uploading');
           if (failedTransfer) {
-            setFileHistory(h => [{
+            addHistoryItem({
               eventId: `failed-${fileId}`,
               deviceId: failedTransfer.sourceDeviceId || transfer.sourceDeviceId,
               fileId,
@@ -138,7 +170,7 @@ export default function FilesPage() {
               createdAt: new Date(),
               status: 'failed' as const,
               failReason: 'Transfer timed out',
-            }, ...h]);
+            });
           }
           return prev.filter(t => t.fileId !== fileId);
         });
@@ -369,7 +401,7 @@ export default function FilesPage() {
         }));
 
         // Merge and sort by date (newest first)
-        const allHistory = [...files, ...failedReceiveItems, ...failedUploadItems].sort(
+        const allHistory = dedupeHistory([...files, ...failedReceiveItems, ...failedUploadItems]).sort(
           (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
         );
         setFileHistory(allHistory);
@@ -383,53 +415,55 @@ export default function FilesPage() {
     if (cryptoInitialized && identityKeyPair) {
       loadHistory();
     }
-  }, [cryptoInitialized, identityKeyPair]);
+  }, [cryptoInitialized, identityKeyPair, dedupeHistory, deviceId]);
 
   // Handle incoming file events (skip self-originated events)
   useEffect(() => {
-    // DEBUG: Log all incoming events for tracing (only file events to reduce noise)
-    if (lastEvent && lastEvent.type.startsWith('file:')) {
-      console.log('[FILES PAGE] Received FILE event:', {
-        type: lastEvent.type,
-        eventId: lastEvent.event_id,
-        deviceId: lastEvent.device_id,
-        isOwnDevice: lastEvent.device_id === deviceId,
-        hasSessionKeys: !!sessionKeys,
-      });
-    }
+    if (!sessionKeys) return;
 
-    if (lastEvent && sessionKeys) {
-      // Skip events from this device to avoid processing our own uploads
-      if (lastEvent.device_id === deviceId) {
-        console.log('[FILES PAGE] Skipping own device event');
-        return;
-      }
+    const unsubscribe = eventRouter.subscribe(
+      (event) => event.type.startsWith('file:') || event.type === 'webrtc:signal',
+      (event) => {
+        // DEBUG: Log all incoming events for tracing (only file events to reduce noise)
+        if (event.type.startsWith('file:')) {
+          console.log('[FILES PAGE] Received FILE event:', {
+            type: event.type,
+            eventId: event.event_id,
+            deviceId: event.device_id,
+            isOwnDevice: event.device_id === deviceId,
+            hasSessionKeys: !!sessionKeys,
+          });
+        }
 
-      if (lastEvent.type === 'file:metadata') {
-        console.log('[FILES PAGE] Processing file:metadata event');
-        handleIncomingFileMetadata(lastEvent);
-        setSyncStatus('synced');
-        toast('File received from another device', 'success');
-      } else if (lastEvent.type === 'file:chunk') {
-        console.log('[FILES PAGE] Processing file:chunk event');
-        handleIncomingFileChunk(lastEvent);
-      } else if (lastEvent.type === 'file:chunk_ack') {
-        console.log('[FILES PAGE] Processing file:chunk_ack event');
-        handleChunkAck(lastEvent);
-      } else if (lastEvent.type === 'file:resume_request') {
-        console.log('[FILES PAGE] Processing file:resume_request event');
-        handleResumeRequest(lastEvent);
-      } else if (lastEvent.type === 'webrtc:signal') {
-        console.log('[FILES PAGE] Processing webrtc:signal event');
-        handleWebRTCSignal(lastEvent);
+        // Skip events from this device to avoid processing our own uploads
+        if (event.device_id === deviceId) {
+          console.log('[FILES PAGE] Skipping own device event');
+          return;
+        }
+
+        if (event.type === 'file:metadata') {
+          console.log('[FILES PAGE] Processing file:metadata event');
+          handleIncomingFileMetadata(event);
+          setSyncStatus('synced');
+          toast('File received from another device', 'success');
+        } else if (event.type === 'file:chunk') {
+          console.log('[FILES PAGE] Processing file:chunk event');
+          handleIncomingFileChunk(event);
+        } else if (event.type === 'file:chunk_ack') {
+          console.log('[FILES PAGE] Processing file:chunk_ack event');
+          handleChunkAck(event);
+        } else if (event.type === 'file:resume_request') {
+          console.log('[FILES PAGE] Processing file:resume_request event');
+          handleResumeRequest(event);
+        } else if (event.type === 'webrtc:signal') {
+          console.log('[FILES PAGE] Processing webrtc:signal event');
+          handleWebRTCSignal(event);
+        }
       }
-    } else if (lastEvent && !sessionKeys) {
-      console.warn('[FILES PAGE] Event received but no session keys!', {
-        type: lastEvent.type,
-        eventId: lastEvent.event_id,
-      });
-    }
-  }, [lastEvent, sessionKeys, deviceId]);
+    );
+
+    return unsubscribe;
+  }, [sessionKeys, deviceId, handleIncomingFileMetadata, handleIncomingFileChunk, handleChunkAck, handleResumeRequest, handleWebRTCSignal]);
 
   // Process file events that arrived before this page was mounted.
   // The WebSocket client buffers file events, and we consume them here on mount.
@@ -549,7 +583,7 @@ export default function FilesPage() {
           logger.error('Failed to mark transfer as failed', err)
         );
         // Add to file history
-        setFileHistory(h => [{
+        addHistoryItem({
           eventId: `failed-${t.fileId}`,
           deviceId: t.sourceDeviceId || offlineDeviceId,
           fileId: t.fileId,
@@ -559,13 +593,13 @@ export default function FilesPage() {
           createdAt: new Date(),
           status: 'failed' as const,
           failReason: 'Sender went offline',
-        }, ...h]);
+        });
         toast(`Transfer of "${t.name}" failed — sender went offline`, 'error');
       }
 
       return remaining;
     });
-  }, [lastSystemMessage]);
+  }, [lastSystemMessage, addHistoryItem]);
 
   // Clean up all timeout timers on unmount
   useEffect(() => {
@@ -1078,7 +1112,7 @@ export default function FilesPage() {
 
       // Move from active transfers to history
       setTransfers(prev => prev.filter(t => t.fileId !== fileId));
-      setFileHistory(prev => [{
+      addHistoryItem({
         eventId: `completed-recv-${fileId}`,
         deviceId: metadata.device_id || '',
         fileId,
@@ -1087,7 +1121,7 @@ export default function FilesPage() {
         mimeType: metadata.mime_type || '',
         createdAt: new Date(),
         status: 'completed' as const,
-      }, ...prev]);
+      });
 
       // Send file:complete event to notify sender
       await sendFileCompleteEvent(fileId, metadata.name);
@@ -1224,7 +1258,7 @@ export default function FilesPage() {
           logger.info('All chunks acknowledged, upload complete', { fileId, name: upload.name });
           // Move from active transfers to history
           setTransfers(prev => prev.filter(t => t.fileId !== fileId));
-          setFileHistory(prev => [{
+          addHistoryItem({
             eventId: `completed-send-${fileId}`,
             deviceId: deviceId,
             fileId,
@@ -1233,7 +1267,7 @@ export default function FilesPage() {
             mimeType: upload.mimeType,
             createdAt: new Date(),
             status: 'completed' as const,
-          }, ...prev]);
+          });
           // Clean up upload tracker
           await deleteUpload(fileId);
         }
@@ -1443,7 +1477,7 @@ export default function FilesPage() {
             <div className="animate-in fade-in slide-in-from-bottom-2 duration-400" style={{ animationDelay: '200ms', animationFillMode: 'backwards' }}>
               <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">Active Transfers</h2>
               <div className="rounded-2xl border border-border bg-card overflow-hidden">
-                {transfers.map((transfer, idx) => {
+                {dedupedTransfers.map((transfer, idx) => {
                   const cfg = getStatusConfig(transfer.status, transfer.direction);
                   const StatusIcon = cfg.icon;
                   return (
@@ -1506,7 +1540,7 @@ export default function FilesPage() {
                   </div>
                 ))}
               </div>
-            ) : fileHistory.length === 0 ? (
+            ) : dedupedHistory.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-border p-10 text-center">
                 <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-muted/50">
                   <FolderOpen className="h-8 w-8 text-muted-foreground/50" />
@@ -1518,7 +1552,7 @@ export default function FilesPage() {
               </div>
             ) : (
               <div className="rounded-2xl border border-border bg-card overflow-hidden">
-                {fileHistory.map((file, idx) => {
+                {dedupedHistory.map((file, idx) => {
                   const isFailed = file.status === 'failed';
                   const isSent = file.deviceId === deviceId;
                   return (

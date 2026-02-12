@@ -26,7 +26,7 @@ import {
   applyYjsUpdate,
 } from '@/lib/features/scratchpad-yjs';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
-import { getWebSocketClient } from '@/lib/ws';
+import { eventRouter } from '@/lib/ws/event-router';
 import { Textarea } from '@/components/ui/textarea';
 import { ShieldCheck, Cloud, CloudOff, RefreshCw, WifiOff, FileText } from 'lucide-react';
 import { config } from '@/lib/config';
@@ -199,7 +199,7 @@ export default function ScratchpadPage() {
     };
   }, [sessionKeys, yjsInitialized]);
 
-  // Handle incoming Yjs updates via direct WS client handler
+  // Handle incoming Yjs updates via the shared event router
   // This avoids the lastEvent race where a non-scratchpad event can overwrite
   // lastEvent before React re-renders, causing scratchpad events to be lost
   useEffect(() => {
@@ -207,8 +207,7 @@ export default function ScratchpadPage() {
     if (!sessionKeys || !deviceId || !yjsInitialized) return;
 
     console.log('[ScratchpadSync:PAGE] Registering incoming event handler, local deviceId:', deviceId);
-    const client = getWebSocketClient();
-    const unsubscribe = client.onEvent(async (event) => {
+    const unsubscribe = eventRouter.subscribe('scratchpad:op', async (event) => {
       if (event.type !== 'scratchpad:op') return;
       console.log('[ScratchpadSync:PAGE] Got scratchpad:op event, from device:', event.device_id, 'local device:', deviceId);
       if (event.device_id === deviceId) {

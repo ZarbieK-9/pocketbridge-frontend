@@ -13,6 +13,7 @@ import { createEvent } from '@/lib/sync/event-builder';
 import { decryptPayload } from '@/lib/crypto/encryption';
 import { getEventsByStream } from '@/lib/sync/db';
 import { getOrCreateDeviceId } from '@/lib/utils/device';
+import { extractTimestampFromUUIDv7 } from '@/lib/utils/uuid';
 import { getSharedEncryptionKey } from '@/lib/crypto/shared-key';
 import { getWebSocketClient } from '@/lib/ws';
 import type {
@@ -68,6 +69,12 @@ export async function decryptChatEvent(
 
     const localDeviceId = getOrCreateDeviceId();
 
+    const createdAtRaw = event.created_at;
+    const createdAt = typeof createdAtRaw === 'string'
+      ? Date.parse(createdAtRaw)
+      : createdAtRaw;
+    const timestamp = createdAt ?? extractTimestampFromUUIDv7(event.event_id) ?? Date.now();
+
     if (event.type === 'message:text') {
       const payload = (await decryptPayload(
         event.encrypted_payload,
@@ -77,7 +84,7 @@ export async function decryptChatEvent(
       return {
         id: event.event_id,
         text: payload.text,
-        timestamp: event.created_at || Date.now(),
+        timestamp,
         deviceId: event.device_id,
         isLocal: event.device_id === localDeviceId,
       };
@@ -95,7 +102,7 @@ export async function decryptChatEvent(
       return {
         id: event.event_id,
         text: payload.text,
-        timestamp: event.created_at || Date.now(),
+        timestamp,
         deviceId: event.device_id,
         isLocal: event.device_id === localDeviceId,
       };

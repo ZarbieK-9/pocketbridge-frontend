@@ -72,6 +72,7 @@ export async function buildEvent(
     stream_seq: 0, // Server will assign this
     type,
     encrypted_payload: encryptedPayload,
+    created_at: Date.now(),
     // ttl optional
   };
 

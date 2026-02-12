@@ -8,7 +8,9 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { getWebSocketClient } from '@/lib/ws';
+import { eventRouter } from '@/lib/ws/event-router';
 import { useCrypto } from '@/hooks/use-crypto';
+import { logger } from '@/lib/utils/logger';
 import type { ConnectionStatus, EncryptedEvent, SessionKeys, SystemMessage } from '@/types';
 
 interface UseWebSocketOptions {
@@ -38,7 +40,7 @@ export function useWebSocket({
   const connect = useCallback(async () => {
     // Guard: cannot connect without required parameters
     if (!url || !deviceId) {
-      console.debug(logPrefix, 'connect aborted: missing params', { url, deviceId });
+      logger.debug(`${logPrefix} connect aborted: missing params`, { url, deviceId });
       return; // Gracefully no-op until params are available
     }
 
@@ -50,11 +52,11 @@ export function useWebSocket({
       if (cryptoError) {
         throw new Error(`Crypto initialization failed: ${cryptoError.message}`);
       }
-      console.debug(logPrefix, 'connect deferred: waiting for crypto initialization');
+      logger.debug(`${logPrefix} connect deferred: waiting for crypto initialization`);
       return; // Effect will re-run when cryptoInitialized becomes true
     }
 
-    console.debug(logPrefix, 'connecting', { url, deviceId, waitForCrypto, cryptoInitialized });
+    logger.info(`${logPrefix} connecting`, { url, deviceId, waitForCrypto, cryptoInitialized });
     const client = getWebSocketClient(url, deviceId);
     await client.connect();
   }, [url, deviceId, waitForCrypto, cryptoInitialized, cryptoError]);
@@ -80,7 +82,7 @@ export function useWebSocket({
   useEffect(() => {
     // If required params are missing, do not initialize the client
     if (!url || !deviceId) {
-      console.debug(logPrefix, 'init aborted: missing params', { url, deviceId });
+      logger.debug(`${logPrefix} init aborted: missing params`, { url, deviceId });
       setError(null);
       setStatus('disconnected');
       return;
@@ -90,7 +92,7 @@ export function useWebSocket({
 
     // Register handlers
     const unsubStatus = client.onStatus((newStatus) => {
-      console.debug(logPrefix, 'status change', { newStatus });
+      logger.info(`${logPrefix} status change`, { newStatus });
       setStatus(newStatus);
       // Update session keys and expiration when connected
       if (newStatus === 'connected') {
@@ -104,13 +106,20 @@ export function useWebSocket({
       }
     });
     const unsubEvent = client.onEvent((event) => {
+      logger.debug(`${logPrefix} event received`, {
+        type: event.type,
+        eventId: event.event_id,
+        deviceId: event.device_id,
+      });
+      eventRouter.publish(event);
       setLastEvent(event);
     });
     const unsubSystem = client.onSystem((message) => {
+      logger.debug(`${logPrefix} system message`, { type: message.type });
       setLastSystemMessage(message);
     });
     const unsubError = client.onError((err) => {
-      console.error(logPrefix, 'client error', err);
+      logger.error(`${logPrefix} client error`, err);
       setError(err);
     });
 
@@ -120,7 +129,7 @@ export function useWebSocket({
         // Don't connect yet, wait for crypto to initialize
         // The effect will re-run when cryptoInitialized changes
       } else {
-        console.debug(logPrefix, 'autoConnect -> connect()');
+        logger.debug(`${logPrefix} autoConnect -> connect()`);
         connect();
       }
     }

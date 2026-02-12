@@ -10,6 +10,7 @@
 
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
+import { eventRouter } from '@/lib/ws/event-router';
 import { useCrypto } from '@/hooks/use-crypto';
 import { useNotifications } from '@/hooks/use-notifications';
 import {
@@ -65,7 +66,7 @@ function groupMessagesByDate(messages: ChatMessage[]) {
 export default function SecretChatPage() {
   const deviceId = getOrCreateDeviceId();
   const { isInitialized: cryptoInitialized } = useCrypto();
-  const { isConnected, sessionKeys, lastEvent } = useWebSocket({
+  const { isConnected, sessionKeys } = useWebSocket({
     url: WS_URL,
     deviceId,
     autoConnect: cryptoInitialized,
@@ -110,38 +111,44 @@ export default function SecretChatPage() {
 
   // Handle incoming messages
   useEffect(() => {
-    if (!lastEvent || !sessionKeys) return;
-    if (lastEvent.type !== 'message:text' && lastEvent.type !== 'message:self_destruct') return;
+    if (!sessionKeys) return;
 
-    const eventId = (lastEvent as EncryptedEvent).event_id;
-    if (lastProcessedEventRef.current === eventId) return;
-    lastProcessedEventRef.current = eventId;
+    const unsubscribe = eventRouter.subscribe([
+      'message:text',
+      'message:self_destruct',
+    ], (event) => {
+      const eventId = (event as EncryptedEvent).event_id;
+      if (lastProcessedEventRef.current === eventId) return;
+      lastProcessedEventRef.current = eventId;
 
-    const isFromOtherDevice = (lastEvent as EncryptedEvent).device_id !== deviceId;
+      const isFromOtherDevice = (event as EncryptedEvent).device_id !== deviceId;
 
-    decryptChatEvent(lastEvent as EncryptedEvent).then((msg) => {
-      if (msg) {
-        setMessages((prev) => {
-          if (prev.some((m) => m.id === msg.id)) return prev;
-          return [...prev, msg];
-        });
-        setTimeout(scrollToBottom, 100);
-        setSyncStatus('synced');
-
-        if (isFromOtherDevice) {
-          const remoteId = (lastEvent as EncryptedEvent).device_id;
-          const senderName = getRemoteDeviceName(remoteId);
-          showMessageNotification(senderName, msg.text, () => {
-            window.focus();
+      decryptChatEvent(event as EncryptedEvent).then((msg) => {
+        if (msg) {
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === msg.id)) return prev;
+            return [...prev, msg];
           });
+          setTimeout(scrollToBottom, 100);
+          setSyncStatus('synced');
+
+          if (isFromOtherDevice) {
+            const remoteId = (event as EncryptedEvent).device_id;
+            const senderName = getRemoteDeviceName(remoteId);
+            showMessageNotification(senderName, msg.text, () => {
+              window.focus();
+            });
+          }
         }
-      }
-    }).catch((err) => {
-      logger.warn('Failed to decrypt incoming message', {
-        error: err instanceof Error ? err.message : String(err),
+      }).catch((err) => {
+        logger.warn('Failed to decrypt incoming message', {
+          error: err instanceof Error ? err.message : String(err),
+        });
       });
     });
-  }, [lastEvent, sessionKeys, deviceId, showMessageNotification, scrollToBottom]);
+
+    return unsubscribe;
+  }, [sessionKeys, deviceId, showMessageNotification, scrollToBottom]);
 
   // Scroll when messages change
   useEffect(() => {

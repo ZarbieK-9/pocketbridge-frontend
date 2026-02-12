@@ -93,6 +93,16 @@ export default function DashboardPage() {
   const retryCountRef = useRef<number>(0);
   const isMountedRef = useRef<boolean>(true);
 
+  const dedupeActivity = (events: ActivityEvent[]) => {
+    const seen = new Set<string>();
+    return events.filter((event) => {
+      if (!event.event_id) return true;
+      if (seen.has(event.event_id)) return false;
+      seen.add(event.event_id);
+      return true;
+    });
+  };
+
   // Initialize device name on client only (avoid SSR hydration mismatch)
   useEffect(() => {
     setDeviceName(getOrCreateDeviceName() || 'PocketBridge');
@@ -332,7 +342,7 @@ export default function DashboardPage() {
 
         if (response.ok) {
           const data = await response.json();
-          setRecentActivity(data.events || []);
+          setRecentActivity(dedupeActivity(data.events || []));
           logger.info('Recent activity loaded', {
             count: data.events?.length || 0,
           });
@@ -360,8 +370,11 @@ export default function DashboardPage() {
     if (!lastSystemMessage) return;
 
     if (lastSystemMessage.type === 'activity:event') {
-      const activityEvent = lastSystemMessage.payload;
+      const activityEvent = lastSystemMessage.payload as ActivityEvent;
       setRecentActivity(prev => {
+        if (activityEvent.event_id && prev.some(e => e.event_id === activityEvent.event_id)) {
+          return prev;
+        }
         // Prepend the new event and keep only 5 most recent
         const updated = [activityEvent, ...prev].slice(0, 5);
         logger.info('Activity event received and added to list', {
@@ -651,7 +664,7 @@ export default function DashboardPage() {
             </div>
           ) : recentActivity.length > 0 ? (
             <div className="space-y-2.5">
-              {recentActivity.map((event: ActivityEvent) => {
+              {recentActivity.map((event: ActivityEvent, idx: number) => {
                 let eventDate: Date;
                 if (typeof event.created_at === 'string') {
                   eventDate = new Date(event.created_at);
@@ -671,8 +684,10 @@ export default function DashboardPage() {
                   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
                 };
 
+                const key = event.event_id || `${event.type}:${event.created_at || 'unknown'}:${idx}`;
+
                 return (
-                  <div key={event.event_id} className="flex items-center gap-3 p-3 rounded-xl border bg-linear-to-r from-card to-blue-50/20 dark:to-blue-950/10">
+                  <div key={key} className="flex items-center gap-3 p-3 rounded-xl border bg-linear-to-r from-card to-blue-50/20 dark:to-blue-950/10">
                     <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 dark:bg-blue-950/30">
                       <Download className="h-4 w-4 text-blue-500" />
                     </div>

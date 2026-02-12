@@ -62,6 +62,13 @@ interface HandshakeState {
   processing?: boolean; // Guard flag to prevent concurrent message processing
 }
 
+function normalizeIncomingEvent(event: EncryptedEvent): EncryptedEvent {
+  if (event.type === 'scratchpad:update') {
+    return { ...event, type: 'scratchpad:op' };
+  }
+  return event;
+}
+
 /**
  * WebSocket client for PocketBridge Phase 1
  */
@@ -920,7 +927,12 @@ export class WebSocketClient {
    */
   private async handleMessage(event: MessageEvent): Promise<void> {
     try {
-      const message: WSMessage = JSON.parse(event.data as string);
+      const rawData = typeof event.data === 'string' ? event.data : '';
+      const message: WSMessage = JSON.parse(rawData as string);
+      logger.info('[WS] Message received', {
+        type: message.type,
+        payloadBytes: rawData ? rawData.length : undefined,
+      });
 
       switch (message.type) {
         case 'server_hello':
@@ -930,7 +942,7 @@ export class WebSocketClient {
           await this.handleSessionEstablished(message.payload as SessionEstablished);
           break;
         case 'event':
-          await this.handleIncomingEvent(message.payload as EncryptedEvent);
+          await this.handleIncomingEvent(normalizeIncomingEvent(message.payload as EncryptedEvent));
           break;
         case 'replay_response':
           // Handle both wrapped (with payload) and unwrapped replay responses
@@ -984,7 +996,7 @@ export class WebSocketClient {
             } as EncryptedEvent;
             console.log('[ScratchpadSync:WS] Dispatching to', this.eventHandlers.length, 'event handlers');
             this.eventHandlers.forEach(handler => {
-              try { handler(syntheticEvent); } catch (e) { logger.error('Event handler error', e); }
+              try { handler(normalizeIncomingEvent(syntheticEvent)); } catch (e) { logger.error('Event handler error', e); }
             });
           } else {
             console.warn('[ScratchpadSync:WS] Missing payload fields, dropping');
@@ -1584,10 +1596,9 @@ export class WebSocketClient {
       errorDetails.suggestion = 'Verify the WebSocket URL is correct and the server is reachable';
     }
 
-    console.error('[Phase1] WebSocket error:', {
+    logger.error('[Phase1] WebSocket error', error, {
       message: errorMessage,
       ...errorDetails,
-      rawError: error,
     });
 
     this.updateStatus('error');
@@ -1601,7 +1612,7 @@ export class WebSocketClient {
       try {
         handler(informativeError);
       } catch (err) {
-        console.error('[Phase1] Error handler failed:', err);
+        logger.error('[Phase1] Error handler failed', err as Error);
       }
     });
 
@@ -1615,6 +1626,14 @@ export class WebSocketClient {
     const closeCode = event?.code;
     const closeReason = event?.reason || '';
     const wasClean = event?.wasClean ?? false;
+
+    logger.info('[WS] WebSocket closed', {
+      code: closeCode,
+      reason: closeReason,
+      wasClean,
+      url: this.url,
+      previousStatus: this.status,
+    });
     
     // Log close details for debugging
     if (closeCode !== 1000 && closeCode !== 1001) {
@@ -1625,13 +1644,6 @@ export class WebSocketClient {
         wasClean,
         url: this.url,
         previousStatus: this.status,
-      });
-      console.warn('[Phase1] WebSocket closed:', {
-        code: closeCode,
-        reason: closeReason,
-        wasClean,
-        url: this.url,
-        readyState: this.ws?.readyState,
       });
     }
 

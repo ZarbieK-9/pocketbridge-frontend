@@ -12,6 +12,7 @@ import { UserProfileRestore } from "@/components/user-profile-restore"
 import { OnboardingGuard } from "@/components/onboarding/onboarding-guard"
 import { ToastContainer } from "@/components/ui/toast"
 import { StorageQuotaListener } from "@/components/storage-quota-listener"
+import { DeviceConnectionNotice } from "@/components/device-connection-notice"
 import "@/lib/utils/debug" // Enable browser console debugging
 import { NgrokFetchInterceptor } from "@/components/ngrok-fetch-interceptor"
 import "./globals.css"
@@ -105,6 +106,7 @@ export default function RootLayout({
             <WebVitalsReporter />
             <UserProfileRestore />
             <StorageQuotaListener />
+            <DeviceConnectionNotice />
             <OnboardingGuard>
               {children}
             </OnboardingGuard>
