@@ -140,7 +140,7 @@ export default function OnboardingPage() {
             <p className="text-sm text-emerald-800 dark:text-emerald-200 mt-1">
               Download the Android APK for your phone.{" "}
               <a
-                href="https://expo.dev/accounts/zarbiek-9/projects/mobile-agent/builds/97ed40cc-08ad-49b7-8077-abecaee34e47"
+                href="https://expo.dev/accounts/zarbiek-9/projects/mobile-agent/builds/6f51f580-daf3-401a-b536-5792c5c1e5db"
                 target="_blank"
                 rel="noreferrer"
                 className="font-semibold underline hover:opacity-80"
