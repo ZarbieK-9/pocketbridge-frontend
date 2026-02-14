@@ -64,7 +64,7 @@ export default function PairPage() {
   // Initialize device name and URL on mount
   useEffect(() => {
     const currentDeviceName = getOrCreateDeviceName();
-    const currentWsUrl = getWsUrl() || config.wsUrl || 'wss://terraqueous-nonmarketable-burt.ngrok-free.dev/ws';
+    const currentWsUrl = getWsUrl() || config.wsUrl || 'wss://showmanly-proevolutionary-kasie.ngrok-free.dev/ws';
     
     setDeviceName(currentDeviceName || 'Unknown Device');
     setNewDeviceName(currentDeviceName || 'Unknown Device');

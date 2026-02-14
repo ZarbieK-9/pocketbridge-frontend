@@ -70,9 +70,9 @@ interface ActivityEvent {
 
 export default function DashboardPage() {
   const { identityKeyPair, isInitialized } = useCrypto();
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://terraqueous-nonmarketable-burt.ngrok-free.dev';
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'https://showmanly-proevolutionary-kasie.ngrok-free.dev';
   const deviceId = getOrCreateDeviceId();
-  const wsUrl = getWsUrl() || 'wss://terraqueous-nonmarketable-burt.ngrok-free.dev/ws';
+  const wsUrl = getWsUrl() || 'wss://showmanly-proevolutionary-kasie.ngrok-free.dev/ws';
   const { status: connectionStatus, isConnected, lastSystemMessage } = useWebSocket({
     url: wsUrl,
     deviceId,
